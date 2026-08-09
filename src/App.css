@@ -1071,6 +1071,18 @@
   gap: 14px;
 }
 
+.nx-resource-bar-card-compact {
+  display: flex;
+  flex-direction: column;
+  margin-top: 0;
+}
+
+.nx-resource-bar-card-compact .nx-resource-bar {
+  grid-template-columns: 1fr;
+  flex: 1;
+  align-content: space-between;
+}
+
 .nx-resource-bar-item {
   display: flex;
   align-items: center;
@@ -1160,6 +1172,20 @@
 .nx-config-field select option {
   background: var(--nx-panel);
   color: var(--nx-text);
+}
+
+input[type="time"] {
+  background: var(--nx-panel-alt);
+  border: 1px solid var(--nx-border);
+  border-radius: var(--nx-radius);
+  padding: 6px 10px;
+  color: var(--nx-text);
+  color-scheme: dark;
+  font-family: inherit;
+}
+
+input[type="time"]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
 }
 
 .nx-console {

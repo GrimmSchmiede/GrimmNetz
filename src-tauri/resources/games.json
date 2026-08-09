@@ -13,7 +13,7 @@
           "cd /home/gameserver/instances/{instance_id} && echo 'eula=true' > eula.txt"
         ]
       },
-      "start_command": "java -Xmx{ram_limit_mb}M -Xms1024M -jar paper.jar nogui",
+      "start_command": "java -Xmx{ram_limit_mb}M -Xms{xms_mb}M -jar paper.jar nogui",
       "default_cpu_limit_percent": 200,
       "default_ram_limit_mb": 4096,
       "config": {
@@ -21,8 +21,30 @@
         "format": "properties",
         "fields": [
           { "key": "motd", "label": "Server Name (MOTD)", "type": "text", "default": "A Minecraft Server" },
-          { "key": "gamemode", "label": "Spielmodus", "type": "text", "default": "survival" },
-          { "key": "difficulty", "label": "Schwierigkeitsgrad", "type": "text", "default": "easy" },
+          {
+            "key": "gamemode",
+            "label": "Spielmodus",
+            "type": "select",
+            "default": "survival",
+            "options": [
+              { "value": "survival", "label": "Überleben" },
+              { "value": "creative", "label": "Kreativ" },
+              { "value": "adventure", "label": "Abenteuer" },
+              { "value": "spectator", "label": "Zuschauer" }
+            ]
+          },
+          {
+            "key": "difficulty",
+            "label": "Schwierigkeitsgrad",
+            "type": "select",
+            "default": "easy",
+            "options": [
+              { "value": "peaceful", "label": "Friedlich" },
+              { "value": "easy", "label": "Leicht" },
+              { "value": "normal", "label": "Normal" },
+              { "value": "hard", "label": "Hart" }
+            ]
+          },
           { "key": "max-players", "label": "Maximale Spieleranzahl", "type": "number", "default": "20" },
           { "key": "server-port", "label": "Port", "type": "number", "default": "25565", "opens_port_protocol": "tcp" },
           { "key": "white-list", "label": "White-List aktivieren", "type": "bool", "default": "false" },

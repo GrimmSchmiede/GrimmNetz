@@ -164,11 +164,21 @@ pub async fn ensure_swap(ssh: &mut SshSession) -> Result<()> {
 
 /// Generates and installs a systemd unit so the game server survives reboots
 /// and is controlled purely via `systemctl` (start/stop/restart), running as `gameserver`.
-pub fn render_systemd_unit(instance_id: &str, working_dir: &str, start_command: &str) -> String {
+pub fn render_systemd_unit(
+    instance_id: &str,
+    working_dir: &str,
+    start_command: &str,
+    ram_limit_mb: u32,
+    cpu_limit_percent: u32,
+) -> String {
     // systemd's ExecStart requires an absolute path or a $PATH-resolvable name - it does NOT
     // resolve "./binary" against WorkingDirectory like a shell would. Wrapping in `bash -c`
     // lets every game template keep writing simple relative start commands.
     let escaped_command = start_command.replace('\'', "'\\''");
+    // Enforced by the kernel via cgroups, not just stored as UI-only metadata - MemoryMax hard-
+    // kills the process on overrun (OOM), MemoryHigh throttles well before that point so a
+    // spike doesn't instantly take the whole instance down. CPUQuota=200% means 2 full cores.
+    let memory_high_mb = (ram_limit_mb as f64 * 0.9) as u32;
     format!(
         "[Unit]\n\
          Description=GlimaNexus Gameserver Instance {instance_id}\n\
@@ -178,6 +188,10 @@ pub fn render_systemd_unit(instance_id: &str, working_dir: &str, start_command: 
          User=gameserver\n\
          WorkingDirectory={working_dir}\n\
          ExecStart=/bin/bash -c '{escaped_command}'\n\
+         StandardInput=fifo:/run/grimmnetz-{instance_id}.console\n\
+         MemoryMax={ram_limit_mb}M\n\
+         MemoryHigh={memory_high_mb}M\n\
+         CPUQuota={cpu_limit_percent}%\n\
          Restart=on-failure\n\
          RestartSec=5\n\
          KillSignal=SIGTERM\n\

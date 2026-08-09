@@ -88,9 +88,13 @@ pub fn find_template(game_id: &str) -> Option<GameTemplate> {
 
 /// Substitutes `{instance_id}` / `{ram_limit_mb}` placeholders in install steps and start command.
 pub fn render_step(template: &str, instance_id: &str, ram_limit_mb: u32) -> String {
+    // Half of the max heap, floored at 2G - gives the JVM a solid starting heap instead of
+    // growing it from a small default mid-game, which causes noticeable GC stutter on Linux.
+    let xms_mb = (ram_limit_mb / 2).max(2048).min(ram_limit_mb);
     template
         .replace("{instance_id}", instance_id)
         .replace("{ram_limit_mb}", &ram_limit_mb.to_string())
+        .replace("{xms_mb}", &xms_mb.to_string())
 }
 
 /// Safely wraps a shell command in single quotes for embedding inside another shell command

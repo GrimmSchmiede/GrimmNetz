@@ -142,6 +142,14 @@ impl Db {
         Ok(())
     }
 
+    pub fn update_instance_resources(&self, id: &str, cpu_limit_percent: u32, ram_limit_mb: u32) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE instances SET cpu_limit_percent = ?1, ram_limit_mb = ?2 WHERE id = ?3",
+            params![cpu_limit_percent, ram_limit_mb, id],
+        )?;
+        Ok(())
+    }
+
     pub fn list_instances(&self, server_id: &str) -> rusqlite::Result<Vec<InstanceRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, server_id, game_id, display_name, install_path, systemd_unit, cpu_limit_percent, ram_limit_mb

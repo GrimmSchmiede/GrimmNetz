@@ -566,6 +566,7 @@ function App() {
               </div>
             )}
 
+            {!openInstanceId && (
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 20 }}>
               <h3 style={{ margin: 0 }}>Installierte Gameserver</h3>
               <div style={{ display: "flex", gap: 8 }}>
@@ -577,16 +578,17 @@ function App() {
                 </button>
               </div>
             </div>
-            {discoverError && <p style={{ color: "var(--nx-danger)", fontSize: 12 }}>{discoverError}</p>}
-            {discoverResult !== null && (
+            )}
+            {!openInstanceId && discoverError && <p style={{ color: "var(--nx-danger)", fontSize: 12 }}>{discoverError}</p>}
+            {!openInstanceId && discoverResult !== null && (
               <p style={{ color: "var(--nx-success)", fontSize: 12 }}>
                 {discoverResult === 0 ? "Keine neuen Server gefunden." : `${discoverResult} Server(n) gefunden und hinzugefügt.`}
               </p>
             )}
-            {instances.length === 0 && (
+            {!openInstanceId && instances.length === 0 && (
               <p style={{ color: "var(--nx-text-muted)" }}>Noch keine Gameserver installiert.</p>
             )}
-            <div className="nx-instance-grid">
+            {!openInstanceId && <div className="nx-instance-grid">
               {installingGame && (
                 <div className="nx-instance-card nx-instance-card-installing">
                   <div className="nx-instance-card-icon-row">
@@ -719,7 +721,7 @@ function App() {
                   </div>
                 );
               })}
-            </div>
+            </div>}
 
             {openInstanceId &&
               (() => {
@@ -740,6 +742,12 @@ function App() {
                         : gameSubtitles[instance.game_id]
                     }
                     configSchema={gameTemplates[instance.game_id]?.config}
+                    otherInstancesRamMb={instances
+                      .filter((i) => i.id !== instance.id)
+                      .reduce((sum, i) => sum + i.ram_limit_mb, 0)}
+                    otherInstancesCpuPercent={instances
+                      .filter((i) => i.id !== instance.id)
+                      .reduce((sum, i) => sum + i.cpu_limit_percent, 0)}
                     onAction={(action) => runInstanceAction(instance, action)}
                     onClose={() => setOpenInstanceId(null)}
                   />

@@ -8,6 +8,17 @@ export type PatchNote = {
 // newest first. Not every internal commit needs its own entry.
 export const PATCH_NOTES: PatchNote[] = [
   {
+    version: "0.1.30",
+    date: "2026-08-09",
+    items: [
+      "Neu: Reiter 'Verwaltung' pro Gameserver - CPU/RAM-Limits mit Empfehlung nach Spieleranzahl, Overcommit-Warnung",
+      "Neu: Geplante tägliche Neustarts mit automatischer In-Game-Countdown-Ansage (15/10/5/4/3/2/1 Min)",
+      "Neu: Neustart/Stop mit eigener Ansage an die Spieler und wählbarer Vorlaufzeit",
+      "Neu: Ressourcen-Limits (CPU/RAM) werden jetzt vom Betriebssystem selbst durchgesetzt, nicht mehr nur angezeigt",
+      "Status-Seite: Logs jetzt in voller Breite unten, mehr Platz beim Betrachten eines Servers durch ausgeblendete Serverliste",
+    ],
+  },
+  {
     version: "0.1.29",
     date: "2026-08-08",
     items: [

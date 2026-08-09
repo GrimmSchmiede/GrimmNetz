@@ -44,8 +44,27 @@ type Props = {
   diskTotalGb?: number;
   subtitle?: string;
   configSchema?: ConfigSchema;
+  otherInstancesRamMb?: number;
+  otherInstancesCpuPercent?: number;
   onAction: (action: "start" | "stop" | "restart") => void;
   onClose: () => void;
+};
+
+// Rough hosting-practice rule of thumb per game - base RAM for an empty server plus a per-slot
+// cost, read from whatever the config schema calls the player-slot field. Only ever shown as a
+// non-blocking hint text, never enforced - a modded server can need far more than this guesses.
+const RAM_RECOMMENDATION: Record<string, { slotField: string; baseMb: number; perSlotMb: number }> = {
+  "minecraft-paper": { slotField: "max-players", baseMb: 3072, perSlotMb: 200 },
+  "7dtd": { slotField: "ServerMaxPlayerCount", baseMb: 6144, perSlotMb: 300 },
+};
+
+// Step function instead of linear - most game server engines don't scale cleanly across many
+// cores, so "more cores = better" isn't true past a point. Tiers are [maxSlots, cores], sorted
+// ascending; the first tier whose maxSlots >= the configured slot count applies, otherwise the
+// last (highest) tier.
+const CPU_RECOMMENDATION: Record<string, { slotField: string; tiers: [number, number][] }> = {
+  "minecraft-paper": { slotField: "max-players", tiers: [[5, 2], [14, 3], [Infinity, 4]] },
+  "7dtd": { slotField: "ServerMaxPlayerCount", tiers: [[4, 4], [Infinity, 6]] },
 };
 
 export default function InstanceDetail({
@@ -59,10 +78,12 @@ export default function InstanceDetail({
   diskTotalGb,
   subtitle,
   configSchema,
+  otherInstancesRamMb = 0,
+  otherInstancesCpuPercent = 0,
   onAction,
   onClose,
 }: Props) {
-  const [tab, setTab] = useState<"status" | "config" | "console" | "backups">("status");
+  const [tab, setTab] = useState<"status" | "config" | "management" | "console" | "backups">("status");
   const [backups, setBackups] = useState<BackupEntry[]>([]);
   const [backupsLoading, setBackupsLoading] = useState(false);
   const [backupCreating, setBackupCreating] = useState(false);
@@ -76,13 +97,27 @@ export default function InstanceDetail({
   const [configSaving, setConfigSaving] = useState(false);
   const [configError, setConfigError] = useState("");
   const [configSaved, setConfigSaved] = useState(false);
+  const [hostCapacity, setHostCapacity] = useState<{ cpuCores: number; ramTotalMb: number } | null>(null);
+  const [cpuLimitPercent, setCpuLimitPercent] = useState(instance.cpu_limit_percent);
+  const [ramLimitMb, setRamLimitMb] = useState(instance.ram_limit_mb);
+  const [resourcesSaving, setResourcesSaving] = useState(false);
+  const [resourcesSaved, setResourcesSaved] = useState(false);
+  const [resourcesError, setResourcesError] = useState("");
+  const [scheduledRestarts, setScheduledRestarts] = useState<{ id: string; time: string }[]>([]);
+  const [restartsLoading, setRestartsLoading] = useState(false);
+  const [newRestartTime, setNewRestartTime] = useState("04:00");
+  const [restartAdding, setRestartAdding] = useState(false);
+  const [restartError, setRestartError] = useState("");
+  const [broadcastMessage, setBroadcastMessage] = useState("");
+  const [broadcastDelay, setBroadcastDelay] = useState("5");
+  const [broadcastAction, setBroadcastAction] = useState<"restart" | "stop" | null>(null);
+  const [broadcastSent, setBroadcastSent] = useState<"restart" | "stop" | null>(null);
+  const [broadcastError, setBroadcastError] = useState("");
   const [lines, setLines] = useState<string[]>([]);
   const [autoScroll, setAutoScroll] = useState(true);
   const [logAttempt, setLogAttempt] = useState(0);
   const [logError, setLogError] = useState(false);
   const consoleRef = useRef<HTMLDivElement>(null);
-  const mainColRef = useRef<HTMLDivElement>(null);
-  const [mainColHeight, setMainColHeight] = useState<number | null>(null);
   const startedForAttempt = useRef(-1);
 
   const isActive = status?.state === "active";
@@ -266,7 +301,89 @@ export default function InstanceDetail({
   }
 
   useEffect(() => {
-    if (tab !== "config" || !configSchema) return;
+    if (tab !== "management") return;
+    invoke<{ cpu_cores: number; ram_total_mb: number }>("get_host_capacity", { serverId })
+      .then((cap) => setHostCapacity({ cpuCores: cap.cpu_cores, ramTotalMb: cap.ram_total_mb }))
+      .catch(() => {});
+    setRestartsLoading(true);
+    setRestartError("");
+    invoke<{ id: string; time: string }[]>("list_scheduled_restarts", { serverId, unitName: instance.systemd_unit })
+      .then(setScheduledRestarts)
+      .catch((err) => setRestartError(String(err)))
+      .finally(() => setRestartsLoading(false));
+  }, [tab, serverId, instance.systemd_unit]);
+
+  async function addRestart() {
+    setRestartAdding(true);
+    setRestartError("");
+    try {
+      await invoke("add_scheduled_restart", { serverId, unitName: instance.systemd_unit, time: newRestartTime });
+      const updated = await invoke<{ id: string; time: string }[]>("list_scheduled_restarts", {
+        serverId,
+        unitName: instance.systemd_unit,
+      });
+      setScheduledRestarts(updated);
+    } catch (err) {
+      setRestartError(String(err));
+    } finally {
+      setRestartAdding(false);
+    }
+  }
+
+  async function sendBroadcastAction(action: "restart" | "stop") {
+    setBroadcastAction(action);
+    setBroadcastError("");
+    setBroadcastSent(null);
+    try {
+      await invoke("broadcast_and_execute", {
+        serverId,
+        unitName: instance.systemd_unit,
+        message: broadcastMessage,
+        delayMinutes: Number(broadcastDelay),
+        action,
+      });
+      setBroadcastSent(action);
+      setBroadcastMessage("");
+    } catch (err) {
+      setBroadcastError(String(err));
+    } finally {
+      setBroadcastAction(null);
+    }
+  }
+
+  async function removeRestart(id: string) {
+    setRestartError("");
+    try {
+      await invoke("remove_scheduled_restart", { serverId, unitName: instance.systemd_unit, id });
+      setScheduledRestarts((prev) => prev.filter((r) => r.id !== id));
+    } catch (err) {
+      setRestartError(String(err));
+    }
+  }
+
+  async function saveResources() {
+    setResourcesSaving(true);
+    setResourcesError("");
+    setResourcesSaved(false);
+    try {
+      await invoke("update_instance_resources", {
+        serverId,
+        instanceId: instance.id,
+        unitName: instance.systemd_unit,
+        installPath: instance.install_path,
+        cpuLimitPercent,
+        ramLimitMb,
+      });
+      setResourcesSaved(true);
+    } catch (err) {
+      setResourcesError(String(err));
+    } finally {
+      setResourcesSaving(false);
+    }
+  }
+
+  useEffect(() => {
+    if ((tab !== "config" && tab !== "management") || !configSchema) return;
     setConfigLoading(true);
     setConfigError("");
     invoke<Record<string, string>>("get_instance_config", {
@@ -278,16 +395,6 @@ export default function InstanceDetail({
       .catch((err) => setConfigError(String(err)))
       .finally(() => setConfigLoading(false));
   }, [tab, configSchema, serverId, instance.game_id, instance.install_path]);
-
-  useEffect(() => {
-    if (tab !== "status" || !mainColRef.current) return;
-    const el = mainColRef.current;
-    const observer = new ResizeObserver((entries) => {
-      setMainColHeight(entries[0].contentRect.height);
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [tab]);
 
   async function saveConfig() {
     setConfigSaving(true);
@@ -401,6 +508,9 @@ export default function InstanceDetail({
         <button className={`nx-tab ${tab === "config" ? "active" : ""}`} onClick={() => setTab("config")}>
           Konfiguration
         </button>
+        <button className={`nx-tab ${tab === "management" ? "active" : ""}`} onClick={() => setTab("management")}>
+          Verwaltung
+        </button>
         <button className={`nx-tab ${tab === "console" ? "active" : ""}`} onClick={() => setTab("console")}>
           Live-Konsole
         </button>
@@ -410,59 +520,61 @@ export default function InstanceDetail({
       </div>
 
       {tab === "status" && (
-        <div className="nx-status-layout">
-          <div className="nx-status-layout-main" ref={mainColRef}>
-            <div className="nx-status-grid">
-              <div className="nx-chart-card">
-                <div className="nx-chart-card-head">
-                  <div className="nx-chart-title">CPU Auslastung</div>
-                  <select className="nx-range-select" disabled defaultValue="1h">
-                    <option value="1h">1 Stunde</option>
-                  </select>
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={{ display: "flex", alignItems: "stretch", gap: 16 }}>
+            <div className="nx-status-layout-main">
+              <div className="nx-status-grid">
+                <div className="nx-chart-card">
+                  <div className="nx-chart-card-head">
+                    <div className="nx-chart-title">CPU Auslastung</div>
+                    <select className="nx-range-select" disabled defaultValue="1h">
+                      <option value="1h">1 Stunde</option>
+                    </select>
+                  </div>
+                  <div className="nx-chart-value">{(cpuHistory[cpuHistory.length - 1] ?? 0).toFixed(0)}%</div>
+                  <Sparkline values={cpuHistory} max={Math.max(100, instance.cpu_limit_percent)} />
                 </div>
-                <div className="nx-chart-value">{(cpuHistory[cpuHistory.length - 1] ?? 0).toFixed(0)}%</div>
-                <Sparkline values={cpuHistory} max={Math.max(100, instance.cpu_limit_percent)} />
-              </div>
-              <div className="nx-chart-card">
-                <div className="nx-chart-card-head">
-                  <div className="nx-chart-title">RAM Auslastung</div>
-                  <select className="nx-range-select" disabled defaultValue="1h">
-                    <option value="1h">1 Stunde</option>
-                  </select>
+                <div className="nx-chart-card">
+                  <div className="nx-chart-card-head">
+                    <div className="nx-chart-title">RAM Auslastung</div>
+                    <select className="nx-range-select" disabled defaultValue="1h">
+                      <option value="1h">1 Stunde</option>
+                    </select>
+                  </div>
+                  <div className="nx-chart-value">
+                    {((ramHistory[ramHistory.length - 1] ?? 0) / 1024).toFixed(1)} GB
+                    <span className="nx-chart-value-max"> / {(instance.ram_limit_mb / 1024).toFixed(0)} GB</span>
+                  </div>
+                  <Sparkline values={ramHistory} max={instance.ram_limit_mb} />
                 </div>
-                <div className="nx-chart-value">
-                  {((ramHistory[ramHistory.length - 1] ?? 0) / 1024).toFixed(1)} GB
-                  <span className="nx-chart-value-max"> / {(instance.ram_limit_mb / 1024).toFixed(0)} GB</span>
-                </div>
-                <Sparkline values={ramHistory} max={instance.ram_limit_mb} />
-              </div>
-              <div className="nx-fact-card">
-                <div className="nx-fact-row">
-                  <span>Prozess ID</span>
-                  <span>{status?.pid ?? "–"}</span>
-                </div>
-                <div className="nx-fact-row" title={instance.game_id !== "minecraft-paper" ? "Nur für Minecraft verfügbar" : undefined}>
-                  <span>Spieler Online</span>
-                  <span>
-                    {mcLiveStatus?.players_online != null ? `${mcLiveStatus.players_online} / ${mcLiveStatus.players_max}` : "–"}
-                  </span>
-                </div>
-                <div className="nx-fact-row" title={instance.game_id !== "minecraft-paper" ? "Nur für Minecraft verfügbar" : undefined}>
-                  <span>Welt</span>
-                  <span>{mcLiveStatus?.world ?? "–"}</span>
-                </div>
-                <div className="nx-fact-row">
-                  <span>Startzeit</span>
-                  <span>{formatStartedAt(status?.started_at)}</span>
-                </div>
-                <div className="nx-fact-row">
-                  <span>Laufzeit</span>
-                  <span>{formatUptimeShort(status?.uptime_seconds ?? 0)}</span>
+                <div className="nx-fact-card">
+                  <div className="nx-fact-row">
+                    <span>Prozess ID</span>
+                    <span>{status?.pid ?? "–"}</span>
+                  </div>
+                  <div className="nx-fact-row" title={instance.game_id !== "minecraft-paper" ? "Nur für Minecraft verfügbar" : undefined}>
+                    <span>Spieler Online</span>
+                    <span>
+                      {mcLiveStatus?.players_online != null ? `${mcLiveStatus.players_online} / ${mcLiveStatus.players_max}` : "–"}
+                    </span>
+                  </div>
+                  <div className="nx-fact-row" title={instance.game_id !== "minecraft-paper" ? "Nur für Minecraft verfügbar" : undefined}>
+                    <span>Welt</span>
+                    <span>{mcLiveStatus?.world ?? "–"}</span>
+                  </div>
+                  <div className="nx-fact-row">
+                    <span>Startzeit</span>
+                    <span>{formatStartedAt(status?.started_at)}</span>
+                  </div>
+                  <div className="nx-fact-row">
+                    <span>Laufzeit</span>
+                    <span>{formatUptimeShort(status?.uptime_seconds ?? 0)}</span>
+                  </div>
                 </div>
               </div>
             </div>
 
-            <div className="nx-resource-bar-card">
+            <div className="nx-resource-bar-card nx-resource-bar-card-compact" style={{ width: 320, flexShrink: 0 }}>
               <div className="nx-resource-bar">
                 <div className="nx-resource-bar-item">
                   <span className="nx-resource-bar-icon-box">⚙️</span>
@@ -499,9 +611,7 @@ export default function InstanceDetail({
             </div>
           </div>
 
-          <div className="nx-status-layout-log" style={mainColHeight ? { height: mainColHeight, maxHeight: mainColHeight } : undefined}>
-            {renderLogPanel()}
-          </div>
+          {renderLogPanel()}
         </div>
       )}
 
@@ -563,6 +673,214 @@ export default function InstanceDetail({
               {configError && <p style={{ color: "var(--nx-danger)", fontSize: 12 }}>{configError}</p>}
             </>
           )}
+        </div>
+      )}
+
+      {tab === "management" && (
+        <div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 24, paddingBottom: 24, borderBottom: "1px solid var(--nx-border)" }}>
+            <div className="nx-config-field">
+              <span className="nx-config-label" style={{ fontWeight: 600, color: "var(--nx-text)" }}>
+                CPU
+              </span>
+              {(() => {
+                const rec = CPU_RECOMMENDATION[instance.game_id];
+                const slots = rec ? Number(configValues[rec.slotField]) : NaN;
+                if (!rec || !slots || Number.isNaN(slots)) return null;
+                const recommendedCores = rec.tiers.find(([maxSlots]) => slots <= maxSlots)?.[1] ?? rec.tiers[rec.tiers.length - 1][1];
+                const recommendedPercent = recommendedCores * 100;
+                return (
+                  <div style={{ fontSize: 11, color: "var(--nx-text-muted)", marginTop: 6 }}>
+                    💡 Empfohlene CPU für {slots} Spieler: mind. {recommendedCores.toFixed(1)} Kerne
+                    {cpuLimitPercent < recommendedPercent && (
+                      <span style={{ color: "#facc15" }}> — aktuell zugewiesen liegt darunter, kann zu Tick-Lags führen</span>
+                    )}
+                  </div>
+                );
+              })()}
+              {hostCapacity && cpuLimitPercent + otherInstancesCpuPercent > hostCapacity.cpuCores * 100 && (
+                <div style={{ fontSize: 11, color: "var(--nx-danger)", marginTop: 6 }}>
+                  ⚠️ Zusammen mit den anderen Servern ({(otherInstancesCpuPercent / 100).toFixed(1)} Kerne) übersteigt das
+                  die verfügbaren Kerne ({hostCapacity.cpuCores}) — kann andere Server beeinträchtigen.
+                </div>
+              )}
+              <label style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 10 }}>
+                <span>
+                  Prozessorkerne: {(cpuLimitPercent / 100).toFixed(1)}
+                  {hostCapacity && <span style={{ color: "var(--nx-text-muted)" }}> / {hostCapacity.cpuCores} Kerne verfügbar</span>}
+                </span>
+                <input
+                  type="range"
+                  min={50}
+                  max={(hostCapacity?.cpuCores ?? Math.max(cpuLimitPercent / 100, 4)) * 100}
+                  step={50}
+                  value={cpuLimitPercent}
+                  onChange={(e) => setCpuLimitPercent(Number(e.target.value))}
+                />
+              </label>
+            </div>
+
+            <div className="nx-config-field">
+              <span className="nx-config-label" style={{ fontWeight: 600, color: "var(--nx-text)" }}>
+                RAM
+              </span>
+              {(() => {
+                const rec = RAM_RECOMMENDATION[instance.game_id];
+                const slots = rec ? Number(configValues[rec.slotField]) : NaN;
+                if (!rec || !slots || Number.isNaN(slots)) return null;
+                const recommendedMb = rec.baseMb + slots * rec.perSlotMb;
+                return (
+                  <div style={{ fontSize: 11, color: "var(--nx-text-muted)", marginTop: 6 }}>
+                    💡 Empfohlener RAM für {slots} Spieler: mind. {(recommendedMb / 1024).toFixed(1)} GB
+                    {ramLimitMb < recommendedMb && (
+                      <span style={{ color: "#facc15" }}> — aktuell zugewiesen liegt darunter, kann zu Lags führen</span>
+                    )}
+                  </div>
+                );
+              })()}
+              {hostCapacity && ramLimitMb + otherInstancesRamMb > hostCapacity.ramTotalMb && (
+                <div style={{ fontSize: 11, color: "var(--nx-danger)", marginTop: 6 }}>
+                  ⚠️ Zusammen mit den anderen Servern auf diesem Host ({(otherInstancesRamMb / 1024).toFixed(1)} GB) übersteigt das
+                  den verfügbaren RAM ({(hostCapacity.ramTotalMb / 1024).toFixed(0)} GB) — kann andere Server beeinträchtigen.
+                </div>
+              )}
+              <label style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 10 }}>
+                <span>
+                  Arbeitsspeicher: {(ramLimitMb / 1024).toFixed(1)} GB
+                  {hostCapacity && <span style={{ color: "var(--nx-text-muted)" }}> / {(hostCapacity.ramTotalMb / 1024).toFixed(0)} GB verfügbar</span>}
+                </span>
+                <input
+                  type="range"
+                  min={512}
+                  max={hostCapacity?.ramTotalMb ?? Math.max(ramLimitMb, 8192)}
+                  step={512}
+                  value={ramLimitMb}
+                  onChange={(e) => setRamLimitMb(Number(e.target.value))}
+                />
+              </label>
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 24 }}>
+            <button className="nx-btn-restart" disabled={resourcesSaving} onClick={saveResources}>
+              {resourcesSaving ? "Speichert…" : "Ressourcen speichern"}
+            </button>
+            {resourcesSaved && <span style={{ color: "var(--nx-success)", fontSize: 12 }}>Gespeichert ✓ (Neustart erfolgt)</span>}
+            {resourcesError && <span style={{ color: "var(--nx-danger)", fontSize: 12 }}>{resourcesError}</span>}
+          </div>
+
+          <div style={{ marginBottom: 24, paddingBottom: 24, borderBottom: "1px solid var(--nx-border)" }}>
+            <span className="nx-config-label" style={{ fontWeight: 600, color: "var(--nx-text)" }}>
+              Neustart / Stop mit Ansage
+            </span>
+            <p style={{ color: "var(--nx-text-muted)", fontSize: 11, marginTop: 6 }}>
+              Schickt deine Nachricht sofort ins Spiel (z.B. "Wegen Wartungsarbeiten starten wir den Server gleich neu"),
+              wartet die gewählte Zeit, damit Spieler sich abmelden können, und führt die Aktion dann aus.
+            </p>
+            <textarea
+              value={broadcastMessage}
+              onChange={(e) => setBroadcastMessage(e.target.value)}
+              placeholder="Nachricht an die Spieler…"
+              rows={2}
+              style={{
+                width: "100%",
+                marginTop: 10,
+                background: "var(--nx-panel-alt)",
+                border: "1px solid var(--nx-border)",
+                borderRadius: "var(--nx-radius)",
+                padding: "8px 10px",
+                color: "var(--nx-text)",
+                fontFamily: "inherit",
+                fontSize: 13,
+                resize: "vertical",
+              }}
+            />
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
+              <select
+                value={broadcastDelay}
+                onChange={(e) => setBroadcastDelay(e.target.value)}
+                style={{ background: "var(--nx-panel-alt)", border: "1px solid var(--nx-border)", borderRadius: "var(--nx-radius)", padding: "6px 10px", color: "var(--nx-text)" }}
+              >
+                {[1, 2, 3, 4, 5, 10, 15].map((m) => (
+                  <option key={m} value={m}>
+                    in {m} Min
+                  </option>
+                ))}
+              </select>
+              <button
+                className="nx-btn-restart"
+                disabled={!broadcastMessage.trim() || broadcastAction !== null}
+                onClick={() => sendBroadcastAction("restart")}
+              >
+                {broadcastAction === "restart" ? "…" : "Neustart senden"}
+              </button>
+              <button
+                className="nx-btn-restart"
+                disabled={!broadcastMessage.trim() || broadcastAction !== null}
+                onClick={() => sendBroadcastAction("stop")}
+              >
+                {broadcastAction === "stop" ? "…" : "Stop senden"}
+              </button>
+            </div>
+            {broadcastSent && (
+              <p style={{ color: "var(--nx-success)", fontSize: 12, marginTop: 8 }}>
+                Angekündigt ✓ — {broadcastSent === "restart" ? "Neustart" : "Stop"} erfolgt in {broadcastDelay} Min.
+              </p>
+            )}
+            {broadcastError && <p style={{ color: "var(--nx-danger)", fontSize: 12, marginTop: 8 }}>{broadcastError}</p>}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
+            <div>
+              <span className="nx-config-label" style={{ fontWeight: 600, color: "var(--nx-text)" }}>
+                Geplante Neustarts
+              </span>
+              <p style={{ color: "var(--nx-text-muted)", fontSize: 11, marginTop: 6 }}>
+                Startet den Server automatisch täglich um die gewählte Uhrzeit neu (z.B. nachts, um Speicherlecks
+                oder Lag-Aufbau vorzubeugen). Läuft direkt auf dem Server per systemd-Timer, unabhängig davon,
+                ob GrimmNetz gerade offen ist.
+              </p>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
+                <input
+                  type="time"
+                  value={newRestartTime}
+                  onChange={(e) => setNewRestartTime(e.target.value)}
+                  style={{ background: "var(--nx-panel-alt)", border: "1px solid var(--nx-border)", borderRadius: "var(--nx-radius)", padding: "6px 10px", color: "var(--nx-text)" }}
+                />
+                <button className="nx-btn-restart" disabled={restartAdding} onClick={addRestart}>
+                  {restartAdding ? "…" : "Hinzufügen"}
+                </button>
+              </div>
+              {restartError && <p style={{ color: "var(--nx-danger)", fontSize: 12, marginTop: 6 }}>{restartError}</p>}
+            </div>
+
+            <div>
+              {restartsLoading && <p style={{ color: "var(--nx-text-muted)", fontSize: 12 }}>Lade…</p>}
+              {!restartsLoading && scheduledRestarts.length === 0 && (
+                <p style={{ color: "var(--nx-text-muted)", fontSize: 12 }}>Keine geplanten Neustarts.</p>
+              )}
+              {!restartsLoading &&
+                scheduledRestarts.map((r) => (
+                  <div
+                    key={r.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      padding: "8px 12px",
+                      background: "var(--nx-panel-alt)",
+                      border: "1px solid var(--nx-border)",
+                      borderRadius: "var(--nx-radius)",
+                      marginBottom: 8,
+                    }}
+                  >
+                    <span>Täglich um {r.time} Uhr</span>
+                    <button className="nx-icon-btn" onClick={() => removeRestart(r.id)} aria-label="Entfernen">
+                      ✕
+                    </button>
+                  </div>
+                ))}
+            </div>
+          </div>
         </div>
       )}
 

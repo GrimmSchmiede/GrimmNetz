@@ -467,7 +467,13 @@ async fn install_game(
 
     let start_command = games::render_step(&template.start_command, &instance_id, ram_limit_mb);
     let unit_name = format!("novanexus-{instance_id}");
-    let unit_contents = provisioning::render_systemd_unit(&instance_id, &install_path, &start_command);
+    let unit_contents = provisioning::render_systemd_unit(
+        &instance_id,
+        &install_path,
+        &start_command,
+        ram_limit_mb,
+        template.default_cpu_limit_percent,
+    );
 
     provisioning::install_systemd_unit(session, &unit_name, &unit_contents)
         .await
@@ -945,6 +951,258 @@ async fn get_instance_status(state: State<'_, AppState>, server_id: String, unit
     Ok(InstanceStatus { state, uptime_seconds, pid, started_at })
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct HostCapacity {
+    pub cpu_cores: u32,
+    pub ram_total_mb: u32,
+}
+
+/// So the resource sliders in the UI can be capped at what the server actually has, instead of
+/// letting the user assign more RAM/CPU to one instance than the whole machine owns.
+#[tauri::command]
+async fn get_host_capacity(state: State<'_, AppState>, server_id: String) -> Result<HostCapacity, String> {
+    let mut guard = acquire_session(&state, &server_id).await?;
+    let session = guard.as_mut().unwrap();
+    let output = session
+        .exec("echo \"$(nproc)|$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)\"")
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut parts = output.trim().splitn(2, '|');
+    let cpu_cores = parts.next().and_then(|v| v.parse().ok()).unwrap_or(1);
+    let ram_total_mb = parts.next().and_then(|v| v.parse().ok()).unwrap_or(1024);
+    Ok(HostCapacity { cpu_cores, ram_total_mb })
+}
+
+/// Rewrites an instance's resource limits both in the systemd unit (the part that's actually
+/// enforced by the kernel) and the local DB record (so the UI reflects it immediately), then
+/// restarts the service so the new MemoryMax/CPUQuota take effect right away.
+#[tauri::command]
+async fn update_instance_resources(
+    state: State<'_, AppState>,
+    server_id: String,
+    instance_id: String,
+    unit_name: String,
+    install_path: String,
+    cpu_limit_percent: u32,
+    ram_limit_mb: u32,
+) -> Result<(), String> {
+    validate_instance_path(&install_path, &instance_id)?;
+
+    let start_command = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let instances = db.list_instances(&server_id).map_err(|e| e.to_string())?;
+        let record = instances
+            .iter()
+            .find(|i| i.id == instance_id)
+            .ok_or_else(|| "Instanz nicht gefunden".to_string())?;
+        let template = games::find_template(&record.game_id).ok_or_else(|| "Unbekanntes Spiel".to_string())?;
+        games::render_step(&template.start_command, &instance_id, ram_limit_mb)
+    };
+
+    let mut guard = acquire_session(&state, &server_id).await?;
+    let session = guard.as_mut().unwrap();
+    let unit_contents =
+        provisioning::render_systemd_unit(&instance_id, &install_path, &start_command, ram_limit_mb, cpu_limit_percent);
+    provisioning::install_systemd_unit(session, &unit_name, &unit_contents)
+        .await
+        .map_err(|e| e.to_string())?;
+    provisioning::control_instance(session, &unit_name, "restart")
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.update_instance_resources(&instance_id, cpu_limit_percent, ram_limit_mb)
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ScheduledRestart {
+    pub id: String,
+    pub time: String, // "HH:MM", 24h
+}
+
+/// Only ever alphanumeric/dash/colon, and always exactly `unit_name` as a prefix - so a
+/// malformed id/unit_name can never widen a `rm`/`systemctl` call to another instance's timer.
+/// Shifts a "HH:MM" time by `delta_minutes` (may be negative), wrapping around midnight.
+fn shift_time(hh: &str, mm: &str, delta_minutes: i32) -> (String, String) {
+    let total = hh.parse::<i32>().unwrap_or(0) * 60 + mm.parse::<i32>().unwrap_or(0);
+    let shifted = (total + delta_minutes).rem_euclid(24 * 60);
+    (format!("{:02}", shifted / 60), format!("{:02}", shifted % 60))
+}
+
+/// Path of the FIFO systemd feeds into the game process's stdin (wired up in
+/// `render_systemd_unit`) - the only way to get a `say ...` console command into a running
+/// instance, since these are plain systemd services with no other IPC channel.
+fn console_fifo_path(unit_name: &str) -> Option<String> {
+    let instance_id = unit_name.strip_prefix("novanexus-")?;
+    Some(format!("/run/grimmnetz-{instance_id}.console"))
+}
+
+/// A single best-effort console write: `timeout` guards against ever hanging forever if the
+/// FIFO has no reader (game not actually running) - `echo > fifo` blocks indefinitely otherwise.
+fn console_say_command(fifo: &str, message: &str) -> String {
+    let echo_cmd = format!("echo {} > {fifo}", games::shell_single_quote(&format!("say {message}")));
+    format!("timeout 2 sudo -u gameserver bash -c {} 2>/dev/null", games::shell_single_quote(&echo_cmd))
+}
+
+fn timer_name(unit_name: &str, id: &str) -> Result<String, String> {
+    let valid = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    if !valid(unit_name) || !valid(id) {
+        return Err("Ungültiger Bezeichner".to_string());
+    }
+    Ok(format!("restart-{unit_name}-{id}"))
+}
+
+/// Scheduled restarts live entirely as systemd timers on the game server itself (not in our
+/// local DB) - they keep firing even if GrimmNetz is closed or the local install is ever lost,
+/// same reasoning as the rest of the server-side-source-of-truth design in this app.
+#[tauri::command]
+async fn list_scheduled_restarts(
+    state: State<'_, AppState>,
+    server_id: String,
+    unit_name: String,
+) -> Result<Vec<ScheduledRestart>, String> {
+    if unit_name.is_empty() || !unit_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err("Ungültiger Bezeichner".to_string());
+    }
+    let mut guard = acquire_session(&state, &server_id).await?;
+    let session = guard.as_mut().unwrap();
+    let prefix = format!("restart-{unit_name}-");
+    let output = session
+        .exec(&format!(
+            "for f in /etc/systemd/system/novanexus-{prefix}*.timer; do \
+               [ -e \"$f\" ] || continue; \
+               NAME=$(basename \"$f\" .timer); \
+               CAL=$(grep -oP 'OnCalendar=\\*-\\*-\\* \\K[0-9:]+' \"$f\"); \
+               echo \"$NAME|$CAL\"; \
+             done"
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let restart_prefix = format!("novanexus-{prefix}");
+    Ok(output
+        .lines()
+        .filter_map(|line| {
+            let (name, cal) = line.split_once('|')?;
+            let id = name.strip_prefix(&restart_prefix)?;
+            // The timer itself fires 15 min before the displayed restart time (that's when the
+            // countdown announcements start) - shift back so the UI shows the actual restart time.
+            let (h, m) = cal.get(0..2).zip(cal.get(3..5))?;
+            let (h, m) = shift_time(h, m, 15);
+            Some(ScheduledRestart { id: id.to_string(), time: format!("{h}:{m}") })
+        })
+        .collect())
+}
+
+/// Writes a `.timer` + `.service` pair that runs `systemctl restart <unit_name>` daily at the
+/// given time - a plain, minimal alternative to cron that's consistent with how every other
+/// game instance is already managed (systemd unit files, not a separate scheduling system).
+#[tauri::command]
+async fn add_scheduled_restart(
+    state: State<'_, AppState>,
+    server_id: String,
+    unit_name: String,
+    time: String,
+) -> Result<(), String> {
+    let (hh, mm) = time
+        .split_once(':')
+        .filter(|(h, m)| h.len() == 2 && m.len() == 2 && h.chars().all(|c| c.is_ascii_digit()) && m.chars().all(|c| c.is_ascii_digit()))
+        .ok_or_else(|| "Ungültige Uhrzeit".to_string())?;
+
+    let id = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
+    let full_name = format!("novanexus-{}", timer_name(&unit_name, &id)?);
+    let fifo = console_fifo_path(&unit_name).ok_or_else(|| "Ungültiger Bezeichner".to_string())?;
+
+    // Fires 15 min before the time the user picked, counts down with in-game announcements,
+    // and only restarts once it lands exactly on the requested time - not the other way around
+    // (restart at HH:MM, warnings trailing off beforehand would mean the countdown text lies
+    // about how much time is actually left).
+    let countdown = [(15, 300), (10, 300), (5, 60), (4, 60), (3, 60), (2, 60), (1, 60)]
+        .iter()
+        .map(|(mark, sleep_after)| format!("{} ; sleep {sleep_after}", console_say_command(&fifo, &format!("Server Neustart in {mark} Min"))))
+        .collect::<Vec<_>>()
+        .join(" ; ");
+    let (warn_hh, warn_mm) = shift_time(hh, mm, -15);
+
+    let service_contents = format!(
+        "[Unit]\nDescription=Geplanter Neustart fuer {unit_name}\n\n\
+         [Service]\nType=oneshot\nExecStart=/bin/bash -c '{}'\n",
+        format!("{countdown} ; sudo systemctl restart {unit_name}").replace('\'', "'\\''")
+    );
+    let timer_contents = format!(
+        "[Unit]\nDescription=Timer fuer geplanten Neustart von {unit_name}\n\n\
+         [Timer]\nOnCalendar=*-*-* {warn_hh}:{warn_mm}:00\nPersistent=false\n\n\
+         [Install]\nWantedBy=timers.target\n"
+    );
+
+    let mut guard = acquire_session(&state, &server_id).await?;
+    let session = guard.as_mut().unwrap();
+    provisioning::install_systemd_unit(session, &full_name, &service_contents)
+        .await
+        .map_err(|e| e.to_string())?;
+    session
+        .exec(&format!(
+            "sudo tee /etc/systemd/system/{full_name}.timer > /dev/null <<'GRIMMNETZ_EOF'\n{timer_contents}GRIMMNETZ_EOF\n\
+             sudo systemctl daemon-reload && sudo systemctl enable --now {full_name}.timer"
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Broadcasts an operator-chosen message into the running game (e.g. "Wartungsarbeiten, Server
+/// startet in 5 Minuten neu"), waits the chosen delay, then restarts or stops the instance.
+/// Runs on its own dedicated connection detached from the shared session pool - the shared
+/// pool slot would otherwise sit locked out for the whole delay (up to 15 minutes).
+#[tauri::command]
+async fn broadcast_and_execute(
+    state: State<'_, AppState>,
+    server_id: String,
+    unit_name: String,
+    message: String,
+    delay_minutes: u32,
+    action: String,
+) -> Result<(), String> {
+    if action != "restart" && action != "stop" {
+        return Err("Ungültige Aktion".to_string());
+    }
+    let fifo = console_fifo_path(&unit_name).ok_or_else(|| "Ungültiger Bezeichner".to_string())?;
+    let delay_seconds = delay_minutes.min(180) * 60;
+    let script = format!(
+        "{} ; sleep {delay_seconds} ; sudo systemctl {action} {unit_name}",
+        console_say_command(&fifo, &message)
+    );
+
+    let mut session = connect_fresh(&state, &server_id).await?;
+    tauri::async_runtime::spawn(async move {
+        let _ = session.exec_long(&script).await;
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn remove_scheduled_restart(
+    state: State<'_, AppState>,
+    server_id: String,
+    unit_name: String,
+    id: String,
+) -> Result<(), String> {
+    let full_name = format!("novanexus-{}", timer_name(&unit_name, &id)?);
+    let mut guard = acquire_session(&state, &server_id).await?;
+    let session = guard.as_mut().unwrap();
+    session
+        .exec(&format!(
+            "sudo systemctl disable --now {full_name}.timer 2>/dev/null; \
+             sudo rm -f /etc/systemd/system/{full_name}.timer /etc/systemd/system/{full_name}.service; \
+             sudo systemctl daemon-reload"
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Guards against ever running `rm -rf` on something wider than a single instance's own
 /// directory - e.g. an empty/truncated path that resolves to the shared instances root.
 /// The path must be exactly `/home/gameserver/instances/<instance_id>` with a non-empty,
@@ -1385,6 +1643,12 @@ pub fn run() {
             save_instance_config,
             control_instance,
             get_instance_status,
+            get_host_capacity,
+            update_instance_resources,
+            list_scheduled_restarts,
+            add_scheduled_restart,
+            remove_scheduled_restart,
+            broadcast_and_execute,
             delete_instance,
             forget_instance,
             list_directory,
