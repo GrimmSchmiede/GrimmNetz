@@ -8,6 +8,13 @@ export type PatchNote = {
 // newest first. Not every internal commit needs its own entry.
 export const PATCH_NOTES: PatchNote[] = [
   {
+    version: "0.1.35",
+    date: "2026-08-09",
+    items: [
+      "Fix: Firewall-Erfolgsmeldung zeigte weiterhin '⚠️ Server ungeschützt' als Überschrift statt '🛡️ Server jetzt geschützt'",
+    ],
+  },
+  {
     version: "0.1.34",
     date: "2026-08-09",
     items: [

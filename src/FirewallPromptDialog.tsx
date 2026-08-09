@@ -28,7 +28,7 @@ export default function FirewallPromptDialog({ serverName, serverId, onClose }: 
   return (
     <div className="nx-modal-overlay" onClick={done || busy ? undefined : onClose}>
       <div className="nx-modal" onClick={(e) => e.stopPropagation()}>
-        <h2>⚠️ Server ungeschützt</h2>
+        <h2>{done ? "🛡️ Server jetzt geschützt" : "⚠️ Server ungeschützt"}</h2>
         {!done && (
           <>
             <p style={{ color: "var(--nx-text-muted)", fontSize: 14, lineHeight: 1.5 }}>
