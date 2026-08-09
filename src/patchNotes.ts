@@ -8,6 +8,13 @@ export type PatchNote = {
 // newest first. Not every internal commit needs its own entry.
 export const PATCH_NOTES: PatchNote[] = [
   {
+    version: "0.1.39",
+    date: "2026-08-09",
+    items: [
+      "Fix: Bricht die Verbindung genau während des Aufräumens nach einer fehlgeschlagenen Installation ab, blieb der halbfertige Ordner liegen statt gelöscht zu werden - App verbindet jetzt notfalls neu, um trotzdem aufzuräumen",
+    ],
+  },
+  {
     version: "0.1.38",
     date: "2026-08-09",
     items: [

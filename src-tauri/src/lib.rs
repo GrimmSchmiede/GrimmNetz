@@ -493,7 +493,15 @@ async fn install_game(
         // Don't leave a half-downloaded install lying around on failure (dead connection,
         // timeout, disk full, ...) - every failed attempt otherwise silently eats disk space
         // forever since nothing else ever points at or cleans up this instance_id again.
-        let _ = session.exec(&format!("sudo rm -rf {install_path}")).await;
+        // The step failure itself is often exactly a dropped connection, so the cleanup call
+        // on that same session would silently no-op too - if it fails, drop the pooled slot
+        // and retry cleanup on a brand-new connection before giving up.
+        if session.exec(&format!("sudo rm -rf {install_path}")).await.is_err() {
+            *guard = None;
+            if let Ok(mut fresh) = connect_fresh(&state, &server_id).await {
+                let _ = fresh.exec(&format!("sudo rm -rf {install_path}")).await;
+            }
+        }
         return Err(e);
     }
 
