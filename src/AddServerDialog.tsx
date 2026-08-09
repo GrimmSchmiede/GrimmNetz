@@ -69,6 +69,10 @@ export default function AddServerDialog({ onClose, onCreated }: Props) {
           Passwort
           <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
         </label>
+        <p style={{ color: "var(--nx-text-muted)", fontSize: 11, marginTop: -4 }}>
+          GrimmNetz richtet automatisch einen Brute-Force-Schutz (fail2ban) ein: Nach 3 falschen Passwort-Versuchen
+          wird deine IP für 1 Stunde gesperrt. Gib das Passwort also sorgfältig ein.
+        </p>
 
         {error && <div className="nx-update-error">{error}</div>}
         {busy && (

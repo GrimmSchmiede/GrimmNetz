@@ -158,9 +158,21 @@ async fn connect_fresh(state: &State<'_, AppState>, server_id: &str) -> Result<s
         db.get_server(server_id).map_err(|e| e.to_string())?
     };
     let password = keyring_store::get_secret(server_id).map_err(|e| e.to_string())?;
-    let mut session = ssh::SshSession::connect_password(&server.host, server.port, &server.username, &password)
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut session = ssh::SshSession::connect_password(
+        &server.host,
+        server.port,
+        &server.username,
+        &password,
+        server.known_host_fingerprint.as_deref(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    // First connect after this server was added (pre-pinning support, or a DB migrated from
+    // before host-key pinning existed) - pin whatever key we just saw as the trusted baseline.
+    if server.known_host_fingerprint.is_none() {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let _ = db.set_host_fingerprint(server_id, &session.host_fingerprint);
+    }
     provisioning::ensure_passwordless_sudo(&mut session, &server.username, &password)
         .await
         .map_err(|e| e.to_string())?;
@@ -190,9 +202,23 @@ async fn acquire_session(state: &State<'_, AppState>, server_id: &str) -> Result
 /// password in the OS keyring — never in plaintext.
 #[tauri::command]
 async fn add_server(state: State<'_, AppState>, input: AddServerInput) -> Result<ServerRecord, String> {
-    let mut session = ssh::SshSession::connect_password(&input.host, input.port, &input.username, &input.password)
+    {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        if let Some(existing) = db
+            .find_server_by_host_port(&input.host, input.port)
+            .map_err(|e| e.to_string())?
+        {
+            return Err(format!(
+                "{}:{} ist bereits als \"{}\" eingetragen - Server können nicht doppelt hinzugefügt werden.",
+                input.host, input.port, existing.name
+            ));
+        }
+    }
+
+    let mut session = ssh::SshSession::connect_password(&input.host, input.port, &input.username, &input.password, None)
         .await
         .map_err(|e| e.to_string())?;
+    let host_fingerprint = session.host_fingerprint.clone();
     provisioning::ensure_passwordless_sudo(&mut session, &input.username, &input.password)
         .await
         .map_err(|e| e.to_string())?;
@@ -219,6 +245,7 @@ async fn add_server(state: State<'_, AppState>, input: AddServerInput) -> Result
         port: input.port,
         username: input.username,
         os_info,
+        known_host_fingerprint: Some(host_fingerprint),
     };
 
     let db = state.db.lock().map_err(|e| e.to_string())?;
@@ -243,10 +270,10 @@ async fn check_firewall_active(state: State<'_, AppState>, server_id: String) ->
 /// automated action in the app: a mistake can lock the user out of their own server).
 #[tauri::command]
 async fn enable_firewall(state: State<'_, AppState>, server_id: String) -> Result<(), String> {
-    let (host, port, username) = {
+    let (host, port, username, known_fingerprint) = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
         let server = db.get_server(&server_id).map_err(|e| e.to_string())?;
-        (server.host, server.port, server.username)
+        (server.host, server.port, server.username, server.known_host_fingerprint)
     };
     let password = keyring_store::get_secret(&server_id).map_err(|e| e.to_string())?;
 
@@ -261,7 +288,7 @@ async fn enable_firewall(state: State<'_, AppState>, server_id: String) -> Resul
 
     // Verify with a brand-new connection (never the pooled one, which might just be reusing
     // an already-open TCP socket that predates the firewall change) that we're not locked out.
-    match ssh::SshSession::connect_password(&host, port, &username, &password).await {
+    match ssh::SshSession::connect_password(&host, port, &username, &password, known_fingerprint.as_deref()).await {
         Ok(mut fresh) => {
             let _ = provisioning::cancel_firewall_rollback(&mut fresh, &job_id).await;
             Ok(())
@@ -292,7 +319,10 @@ async fn update_server(
         _ => keyring_store::get_secret(&server_id).map_err(|e| e.to_string())?,
     };
 
-    ssh::SshSession::connect_password(&host, port, &username, &effective_password)
+    // Deliberately not checking the pinned fingerprint here - editing and re-saving a server's
+    // details is the app's explicit "I trust this host key" action (e.g. after a legitimate
+    // server reinstall changed it), same as re-adding it from scratch would.
+    let session = ssh::SshSession::connect_password(&host, port, &username, &effective_password, None)
         .await
         .map_err(|e| format!("Verbindung mit den neuen Zugangsdaten fehlgeschlagen: {e}"))?;
 
@@ -305,6 +335,8 @@ async fn update_server(
     {
         let db = state.db.lock().map_err(|e| e.to_string())?;
         db.update_server(&server_id, &name, &host, port, &username)
+            .map_err(|e| e.to_string())?;
+        db.set_host_fingerprint(&server_id, &session.host_fingerprint)
             .map_err(|e| e.to_string())?;
     }
 

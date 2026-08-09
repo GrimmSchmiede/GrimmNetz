@@ -5,6 +5,7 @@ export type ServerRecord = {
   port: number;
   username: string;
   os_info: string | null;
+  known_host_fingerprint: string | null;
 };
 
 export type InstanceStatus = {

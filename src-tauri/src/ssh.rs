@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use russh::client::{self, Handle};
 use russh::ChannelMsg;
 use russh_keys::key;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 /// A hung TCP connect/handshake (e.g. remote not reachable yet, firewall dropping packets)
@@ -14,24 +14,50 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// the remote host disappeared without a clean TCP close), a channel.wait() can hang forever.
 const EXEC_TIMEOUT: Duration = Duration::from_secs(20);
 
-struct ClientHandler;
+/// Trust-on-first-use host key pinning: `expected` is `None` on a server's very first-ever
+/// connect (anything is accepted, then pinned by the caller) or `Some(fingerprint)` on every
+/// connect after that. A mismatch is refused at the protocol level (`Ok(false)`) - russh then
+/// fails the handshake - and recorded in `mismatch` so the caller can turn the otherwise-generic
+/// handshake error into a clear "host key changed" warning instead of a confusing timeout/refusal.
+struct ClientHandler {
+    expected: Option<String>,
+    observed: Arc<StdMutex<Option<String>>>,
+    mismatch: Arc<StdMutex<bool>>,
+}
 
 #[async_trait::async_trait]
 impl client::Handler for ClientHandler {
     type Error = russh::Error;
 
-    async fn check_server_key(&mut self, _server_public_key: &key::PublicKey) -> Result<bool, Self::Error> {
-        // TODO(v0.1.1): pin/verify known_hosts instead of trust-on-first-use.
-        Ok(true)
+    async fn check_server_key(&mut self, server_public_key: &key::PublicKey) -> Result<bool, Self::Error> {
+        let fingerprint = server_public_key.fingerprint();
+        *self.observed.lock().unwrap() = Some(fingerprint.clone());
+        match &self.expected {
+            None => Ok(true),
+            Some(expected) if *expected == fingerprint => Ok(true),
+            Some(_) => {
+                *self.mismatch.lock().unwrap() = true;
+                Ok(false)
+            }
+        }
     }
 }
 
 pub struct SshSession {
     handle: Handle<ClientHandler>,
+    /// SHA-256 fingerprint of the host key this session actually connected with - the caller
+    /// pins this on a server's first-ever connect (`expected_fingerprint: None`).
+    pub host_fingerprint: String,
 }
 
 impl SshSession {
-    pub async fn connect_password(host: &str, port: u16, username: &str, password: &str) -> Result<Self> {
+    pub async fn connect_password(
+        host: &str,
+        port: u16,
+        username: &str,
+        password: &str,
+        expected_fingerprint: Option<&str>,
+    ) -> Result<Self> {
         // Fresh TCP connects sometimes get an immediate "connection refused" through
         // transient local network hiccups (e.g. WSL2's localhost port-forwarding relay
         // blipping) even though the remote is fine a moment later - a couple of quick
@@ -41,23 +67,69 @@ impl SshSession {
             if attempt > 0 {
                 tokio::time::sleep(Duration::from_millis(400)).await;
             }
-            match tokio::time::timeout(CONNECT_TIMEOUT, Self::connect_password_inner(host, port, username, password)).await {
+            match tokio::time::timeout(
+                CONNECT_TIMEOUT,
+                Self::connect_password_inner(host, port, username, password, expected_fingerprint),
+            )
+            .await
+            {
                 Ok(Ok(session)) => return Ok(session),
-                Ok(Err(e)) => last_err = Some(e),
+                Ok(Err(e)) => {
+                    // A host key mismatch is a security-relevant refusal, not a transient
+                    // hiccup - never retry past it, and never let a later attempt's generic
+                    // error paper over what actually happened.
+                    let is_mismatch = e.to_string().contains("Host-Key");
+                    last_err = Some(e);
+                    if is_mismatch {
+                        break;
+                    }
+                }
                 Err(_) => last_err = Some(anyhow!("Zeitüberschreitung beim Verbindungsaufbau (Server nicht erreichbar?)")),
             }
         }
         Err(last_err.unwrap_or_else(|| anyhow!("Verbindung fehlgeschlagen")))
     }
 
-    async fn connect_password_inner(host: &str, port: u16, username: &str, password: &str) -> Result<Self> {
+    async fn connect_password_inner(
+        host: &str,
+        port: u16,
+        username: &str,
+        password: &str,
+        expected_fingerprint: Option<&str>,
+    ) -> Result<Self> {
+        let observed = Arc::new(StdMutex::new(None));
+        let mismatch = Arc::new(StdMutex::new(false));
+        let handler = ClientHandler {
+            expected: expected_fingerprint.map(str::to_string),
+            observed: observed.clone(),
+            mismatch: mismatch.clone(),
+        };
         let config = Arc::new(client::Config::default());
-        let mut handle = client::connect(config, (host, port), ClientHandler).await?;
+        let mut handle = match client::connect(config, (host, port), handler).await {
+            Ok(h) => h,
+            Err(e) => {
+                if *mismatch.lock().unwrap() {
+                    let seen = observed.lock().unwrap().clone().unwrap_or_default();
+                    return Err(anyhow!(
+                        "Host-Key hat sich geändert! Erwartet: {}, jetzt gesehen: {seen}. Das ist entweder ein neu \
+                         aufgesetzter Server oder ein möglicher Man-in-the-Middle-Angriff - Verbindung abgebrochen. \
+                         Falls der Server absichtlich neu aufgesetzt wurde, bestätige das über \"Server bearbeiten\".",
+                        expected_fingerprint.unwrap_or("?")
+                    ));
+                }
+                return Err(e.into());
+            }
+        };
         let authenticated = handle.authenticate_password(username, password).await?;
         if !authenticated {
             return Err(anyhow!("SSH-Authentifizierung fehlgeschlagen"));
         }
-        Ok(Self { handle })
+        let host_fingerprint = observed
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| anyhow!("Kein Host-Key vom Server empfangen"))?;
+        Ok(Self { handle, host_fingerprint })
     }
 
     /// Runs a single command to completion, returning combined stdout.

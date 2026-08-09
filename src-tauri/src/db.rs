@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -14,6 +14,12 @@ pub struct ServerRecord {
     pub port: u16,
     pub username: String,
     pub os_info: Option<String>,
+    /// SHA-256 fingerprint of the SSH host key seen on first connect (trust-on-first-use).
+    /// Every later connection must match this - a mismatch means the server's host key
+    /// changed, which is either a legitimate reinstall or a man-in-the-middle attack, and
+    /// either way must never be silently accepted.
+    #[serde(default)]
+    pub known_host_fingerprint: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -62,14 +68,34 @@ impl Db {
         )?;
         // Migration for DBs created before os_info existed.
         let _ = conn.execute("ALTER TABLE servers ADD COLUMN os_info TEXT", []);
+        // Migration for DBs created before host-key pinning existed.
+        let _ = conn.execute("ALTER TABLE servers ADD COLUMN known_host_fingerprint TEXT", []);
         Ok(Self { conn })
     }
 
     pub fn insert_server(&self, record: &ServerRecord) -> rusqlite::Result<()> {
         self.conn.execute(
-            "INSERT INTO servers (id, name, host, port, username, auth_method, os_info, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'password', ?6, datetime('now'))",
-            params![record.id, record.name, record.host, record.port, record.username, record.os_info],
+            "INSERT INTO servers (id, name, host, port, username, auth_method, os_info, known_host_fingerprint, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'password', ?6, ?7, datetime('now'))",
+            params![
+                record.id,
+                record.name,
+                record.host,
+                record.port,
+                record.username,
+                record.os_info,
+                record.known_host_fingerprint,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Pins (or repins, e.g. after `update_server` deliberately re-trusts a changed server) the
+    /// SSH host key fingerprint seen on connect.
+    pub fn set_host_fingerprint(&self, id: &str, fingerprint: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE servers SET known_host_fingerprint = ?2 WHERE id = ?1",
+            params![id, fingerprint],
         )?;
         Ok(())
     }
@@ -85,10 +111,35 @@ impl Db {
         Ok(())
     }
 
+    /// Same host+port already added? Reconnecting to a server you already manage under a
+    /// second entry causes real damage further down the line (e.g. `discover_instances`
+    /// re-inserting the same already-known instance under a different server_id and hitting
+    /// the DB's unique constraint) - so this is checked before `add_server` does anything.
+    pub fn find_server_by_host_port(&self, host: &str, port: u16) -> rusqlite::Result<Option<ServerRecord>> {
+        self.conn
+            .query_row(
+                "SELECT id, name, host, port, username, os_info, known_host_fingerprint \
+                 FROM servers WHERE host = ?1 AND port = ?2",
+                params![host, port],
+                |row| {
+                    Ok(ServerRecord {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        host: row.get(2)?,
+                        port: row.get(3)?,
+                        username: row.get(4)?,
+                        os_info: row.get(5)?,
+                        known_host_fingerprint: row.get(6)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
     pub fn list_servers(&self) -> rusqlite::Result<Vec<ServerRecord>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, name, host, port, username, os_info FROM servers ORDER BY created_at ASC")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, host, port, username, os_info, known_host_fingerprint FROM servers ORDER BY created_at ASC",
+        )?;
         let rows = stmt.query_map([], |row| {
             Ok(ServerRecord {
                 id: row.get(0)?,
@@ -97,6 +148,7 @@ impl Db {
                 port: row.get(3)?,
                 username: row.get(4)?,
                 os_info: row.get(5)?,
+                known_host_fingerprint: row.get(6)?,
             })
         })?;
         rows.collect()
@@ -104,7 +156,7 @@ impl Db {
 
     pub fn get_server(&self, id: &str) -> rusqlite::Result<ServerRecord> {
         self.conn.query_row(
-            "SELECT id, name, host, port, username, os_info FROM servers WHERE id = ?1",
+            "SELECT id, name, host, port, username, os_info, known_host_fingerprint FROM servers WHERE id = ?1",
             params![id],
             |row| {
                 Ok(ServerRecord {
@@ -114,6 +166,7 @@ impl Db {
                     port: row.get(3)?,
                     username: row.get(4)?,
                     os_info: row.get(5)?,
+                    known_host_fingerprint: row.get(6)?,
                 })
             },
         )

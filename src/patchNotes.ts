@@ -8,6 +8,15 @@ export type PatchNote = {
 // newest first. Not every internal commit needs its own entry.
 export const PATCH_NOTES: PatchNote[] = [
   {
+    version: "0.1.37",
+    date: "2026-08-09",
+    items: [
+      "Sicherheit: SSH-Host-Key wird jetzt beim ersten Verbinden gespeichert und bei jeder weiteren Verbindung geprüft (verhindert Man-in-the-Middle-Angriffe) - vorher wurde jeder Server-Key ungeprüft akzeptiert",
+      "Neu: fail2ban wird automatisch auf neuen Servern eingerichtet (SSH-Login wird nach 3 falschen Passwort-Versuchen für 1 Stunde gesperrt)",
+      "Fix: Derselbe Server konnte doppelt hinzugefügt werden, was zu Datenbankfehlern beim Server-Scan führte - wird jetzt vorher abgefangen",
+    ],
+  },
+  {
     version: "0.1.36",
     date: "2026-08-09",
     items: [

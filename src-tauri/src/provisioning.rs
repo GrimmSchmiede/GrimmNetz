@@ -114,6 +114,7 @@ pub async fn bootstrap_server(ssh: &mut SshSession, timezone: Option<&str>) -> R
 
     ensure_swap(ssh).await?;
     limit_journal_size(ssh).await?;
+    ensure_fail2ban(ssh, family).await?;
 
     if let Some(tz) = timezone {
         // Only ever forward IANA-format identifiers (Region/City, letters/digits/_/+/-) -
@@ -135,6 +136,29 @@ async fn limit_journal_size(ssh: &mut SshSession) -> Result<()> {
         "sudo mkdir -p /etc/systemd/journald.conf.d && \
          echo -e '[Journal]\\nSystemMaxUse=200M' | sudo tee /etc/systemd/journald.conf.d/grimmnetz.conf > /dev/null && \
          sudo systemctl restart systemd-journald",
+    )
+    .await?;
+    Ok(())
+}
+
+/// SSH is internet-facing on every VPS this app manages and gets brute-forced constantly in
+/// practice - fail2ban bans an IP after repeated failed logins. fail2ban's own default config
+/// ships the sshd jail *disabled*, so installing the package alone does nothing; it has to be
+/// explicitly turned on via jail.d.
+async fn ensure_fail2ban(ssh: &mut SshSession, family: DistroFamily) -> Result<()> {
+    match family {
+        DistroFamily::Debian => {
+            ssh.exec("sudo apt-get install -y fail2ban").await?;
+        }
+        DistroFamily::Fedora => {
+            ssh.exec("sudo dnf install -y fail2ban").await?;
+        }
+    }
+    ssh.exec(
+        "sudo mkdir -p /etc/fail2ban/jail.d && \
+         echo -e '[sshd]\\nenabled = true\\nbantime = 1h\\nfindtime = 10m\\nmaxretry = 3' | \
+         sudo tee /etc/fail2ban/jail.d/grimmnetz-sshd.local > /dev/null && \
+         sudo systemctl enable --now fail2ban",
     )
     .await?;
     Ok(())
