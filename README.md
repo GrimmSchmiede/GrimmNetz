@@ -28,6 +28,7 @@ GrimmNetz ist eine ressourcenschonende, plattformübergreifende Desktop-App, die
 - [🎮 Unterstützte Spiele](#-unterstützte-spiele)
 - [🛠️ Entwicklung & Build-Setup](#%EF%B8%8F-entwicklung--build-setup)
 - [🚀 Releases & Auto-Update](#-releases--auto-update)
+- [🗺️ Roadmap](#%EF%B8%8F-roadmap)
 
 ---
 
@@ -120,3 +121,16 @@ Der Prozess ist vollständig automatisiert über GitHub Actions. Der Updater pr�
 git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
+
+---
+
+## 🗺️ Roadmap
+
+Bewusst zurückgestellte, aber sinnvolle Verbesserungen ohne laufende Kosten - keine feste Zusage, wann/ob sie kommen, aber die Richtung, in die es gehen kann:
+
+- **Vollzugriff (SFTP):** Umbenennen/Rename von Dateien und Ordnern, Inline-Texteditor für Konfigs
+- **Instanz-Isolation verschärfen:** Instanzen von `/home/gameserver` nach `/srv/grimmnetz` verschieben, damit `ProtectHome=yes` im systemd-Sandbox nutzbar wird (verhindert dann auch Lesezugriff zwischen Nachbar-Instanzen, nicht nur Schreibzugriff)
+- **SteamCMD-Wrapper:** Strukturierte Fehlerbehandlung (Festplatte voll, Login-Fehler, ...) statt reinem Fortschritts-Parsing
+- **vcpkg-Integration:** OpenSSL/SQLCipher-Abhängigkeiten unter Windows automatisch auflösen statt manueller Umgebungsvariablen
+- **Weitere Spiele durchtesten:** Palworld, DayZ, Factorio, Satisfactory, Valheim, V Rising, SCUM einmal komplett end-to-end verifizieren (siehe [Unterstützte Spiele](#-unterstützte-spiele))
+- **Interaktive Konsole:** Aktuell reines Log-Streaming - eine echte Zwei-Wege-Konsole (Befehle direkt eintippen) wäre der nächste Schritt
