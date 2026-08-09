@@ -7,9 +7,9 @@
 </p>
 
 <p align="center">
-  <img src="https://shields.io" alt="Version">
-  <img src="https://shields.io" alt="License">
-  <img src="https://shields.io" alt="Platform">
+  <img src="https://img.shields.io/github/v/release/GrimmSchmiede/GrimmNetz?label=Version&color=1abc9c" alt="Version">
+  <img src="https://img.shields.io/github/license/GrimmSchmiede/GrimmNetz?color=1abc9c" alt="License">
+  <img src="https://img.shields.io/badge/Platform-Windows-1abc9c" alt="Platform">
 </p>
 
 ---
