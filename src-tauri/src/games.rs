@@ -70,6 +70,11 @@ pub struct GameTemplate {
     /// Ports that need to be opened in the server's firewall for the game to be reachable.
     #[serde(default)]
     pub ports: Vec<PortSpec>,
+    /// Distros this template has actually been installed and run on end-to-end - empty means
+    /// "should work" (steamcmd-based, same pattern as tested games) but hasn't been verified.
+    /// Shown in the App-Store as a trust signal, never used to block installation.
+    #[serde(default)]
+    pub tested_on: Vec<String>,
 }
 
 #[derive(Deserialize)]

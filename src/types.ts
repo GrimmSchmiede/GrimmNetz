@@ -70,6 +70,7 @@ export type GameTemplate = {
   default_cpu_limit_percent: number;
   default_ram_limit_mb: number;
   config?: ConfigSchema;
+  tested_on: string[];
 };
 
 export type InstallEvent =

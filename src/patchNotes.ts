@@ -8,6 +8,14 @@ export type PatchNote = {
 // newest first. Not every internal commit needs its own entry.
 export const PATCH_NOTES: PatchNote[] = [
   {
+    version: "0.1.36",
+    date: "2026-08-09",
+    items: [
+      "Neu: App-Store zeigt jetzt an, welche Spiele wirklich getestet wurden (✅-Haken) statt nur 'sollte funktionieren'",
+      "README: Tabelle mit getesteten Spielen inkl. Distro ergänzt",
+    ],
+  },
+  {
     version: "0.1.35",
     date: "2026-08-09",
     items: [

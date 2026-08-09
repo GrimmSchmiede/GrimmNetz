@@ -80,15 +80,19 @@ GrimmNetz kombiniert Rust im Backend mit React im Frontend:
 
 Der GrimmNetz App-Store unterstützt die 1-Klick-Installation für:
 
-- 🟩 **Minecraft (Paper)** *(mit Auto-Updates)*
-- 🌴 **Palworld**
-- 🧟 **7 Days to Die**
-- 🐺 **DayZ**
-- ⚙️ **Factorio**
-- 🏭 **Satisfactory**
-- 🪓 **Valheim**
-- 🧛 **V Rising**
-- 🏝️ **SCUM**
+| Spiel | Getestet | Distro |
+| :--- | :---: | :--- |
+| 🟩 **Minecraft (Paper)** *(mit Auto-Updates)* | ✅ | Ubuntu 24.04 |
+| 🧟 **7 Days to Die** | ✅ | Ubuntu 24.04 |
+| 🌴 **Palworld** | — | — |
+| 🐺 **DayZ** | — | — |
+| ⚙️ **Factorio** | — | — |
+| 🏭 **Satisfactory** | — | — |
+| 🪓 **Valheim** | — | — |
+| 🧛 **V Rising** | — | — |
+| 🏝️ **SCUM** | — | — |
+
+✅ heißt: einmal komplett durchinstalliert und laufend verifiziert. Ohne Haken ist die Installation genauso implementiert, aber noch nicht end-to-end bestätigt.
 
 ---
 

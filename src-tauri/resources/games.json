@@ -6,6 +6,7 @@
       "subtitle": "Paper (aktuellste Version)",
       "icon": "minecraft.png",
       "requires": ["java21"],
+      "tested_on": ["Ubuntu 24.04"],
       "install": {
         "type": "direct-download",
         "steps": [
@@ -64,6 +65,7 @@
       "subtitle": "v0.2.1.0",
       "icon": "palworld.png",
       "requires": ["steamcmd"],
+      "tested_on": [],
       "install": {
         "type": "steamcmd",
         "app_id": 2394010,
@@ -113,6 +115,7 @@
       "subtitle": "Dedicated Server",
       "icon": "7daystodie.png",
       "requires": ["steamcmd"],
+      "tested_on": ["Ubuntu 24.04"],
       "install": {
         "type": "steamcmd",
         "app_id": 294420,
@@ -163,6 +166,7 @@
       "subtitle": "Dedicated Server",
       "icon": "dayz.png",
       "requires": ["steamcmd"],
+      "tested_on": [],
       "install": {
         "type": "steamcmd",
         "app_id": 223350,
@@ -182,6 +186,7 @@
       "subtitle": "Headless Server",
       "icon": "factorio.png",
       "requires": [],
+      "tested_on": [],
       "install": {
         "type": "direct-download",
         "steps": [
@@ -210,6 +215,7 @@
       "subtitle": "Dedicated Server",
       "icon": "satisfactory.png",
       "requires": ["steamcmd"],
+      "tested_on": [],
       "install": {
         "type": "steamcmd",
         "app_id": 1690800,
@@ -229,6 +235,7 @@
       "subtitle": "Dedicated Server",
       "icon": "scum.png",
       "requires": ["steamcmd"],
+      "tested_on": [],
       "install": {
         "type": "steamcmd",
         "app_id": 3792580,
@@ -251,6 +258,7 @@
       "subtitle": "Dedicated Server",
       "icon": "valheim.png",
       "requires": ["steamcmd"],
+      "tested_on": [],
       "install": {
         "type": "steamcmd",
         "app_id": 896660,
@@ -270,6 +278,7 @@
       "subtitle": "Dedicated Server",
       "icon": "vrising.png",
       "requires": ["steamcmd"],
+      "tested_on": [],
       "install": {
         "type": "steamcmd",
         "app_id": 1829350,

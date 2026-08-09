@@ -60,8 +60,19 @@ export default function GameStoreDialog({ serverId, onClose, onInstalled, onInst
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
                 <GameIcon gameId={game.id} size={32} />
                 <span style={{ fontWeight: 600 }}>{game.name}</span>
+                {game.tested_on.length > 0 && (
+                  <span
+                    title={`Getestet auf: ${game.tested_on.join(", ")}`}
+                    style={{ color: "var(--nx-success)", fontSize: 12 }}
+                  >
+                    ✅
+                  </span>
+                )}
               </div>
-              <div style={{ color: "var(--nx-text-muted)", fontSize: 12, marginBottom: 10 }}>{game.subtitle}</div>
+              <div style={{ color: "var(--nx-text-muted)", fontSize: 12, marginBottom: 2 }}>{game.subtitle}</div>
+              <div style={{ color: "var(--nx-text-muted)", fontSize: 11, marginBottom: 10 }}>
+                {game.tested_on.length > 0 ? `Getestet: ${game.tested_on.join(", ")}` : "Noch nicht getestet"}
+              </div>
               <button
                 className="nx-update-btn"
                 disabled={installingId !== null}
