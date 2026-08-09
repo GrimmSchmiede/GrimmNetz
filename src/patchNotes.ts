@@ -8,6 +8,14 @@ export type PatchNote = {
 // newest first. Not every internal commit needs its own entry.
 export const PATCH_NOTES: PatchNote[] = [
   {
+    version: "0.1.38",
+    date: "2026-08-09",
+    items: [
+      "Sicherheit: Gameserver-Instanzen laufen jetzt in einer systemd-Sandbox (ProtectSystem=strict) - das gesamte Dateisystem außer dem eigenen Instanz-Ordner ist für den Prozess schreibgeschützt, verhindert dass eine kompromittierte Instanz Nachbar-Server manipuliert",
+      "Sicherheit: SFTP-Vollzugriff verweigert jetzt Lösch-/Lese-Operationen auf symbolische Links (verhindert, dass ein manipulierter Symlink auf Systemdateien zeigt)",
+    ],
+  },
+  {
     version: "0.1.37",
     date: "2026-08-09",
     items: [

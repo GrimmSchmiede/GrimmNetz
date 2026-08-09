@@ -213,6 +213,9 @@ pub fn render_systemd_unit(
          WorkingDirectory={working_dir}\n\
          ExecStart=/bin/bash -c '{escaped_command}'\n\
          StandardInput=fifo:/run/grimmnetz-{instance_id}.console\n\
+         ProtectSystem=strict\n\
+         ReadWritePaths={working_dir}\n\
+         ReadOnlyPaths=/home/gameserver/.steamcmd\n\
          MemoryMax={ram_limit_mb}M\n\
          MemoryHigh={memory_high_mb}M\n\
          CPUQuota={cpu_limit_percent}%\n\

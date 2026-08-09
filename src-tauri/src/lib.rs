@@ -1688,11 +1688,23 @@ async fn sftp_delete(state: State<'_, AppState>, server_id: String, path: String
     }
     let mut guard = acquire_session(&state, &server_id).await?;
     let session = guard.as_mut().unwrap();
+    // If a compromised game process planted a symlink pointing outside its own instance folder
+    // (e.g. at a system file), `rm -rf` would happily follow it and delete the *target*, not
+    // just the link itself - refuse to touch anything that isn't a real file/directory.
+    let quoted = games::shell_single_quote(&path);
     session
-        .exec(&format!("sudo rm -rf {}", games::shell_single_quote(&path)))
+        .exec(&format!(
+            "if [ -L {quoted} ]; then echo GRIMMNETZ_SYMLINK_REFUSED; else sudo rm -rf {quoted}; fi"
+        ))
         .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+        .map_err(|e| e.to_string())
+        .and_then(|out| {
+            if out.contains("GRIMMNETZ_SYMLINK_REFUSED") {
+                Err("Verweigert: Ziel ist ein symbolischer Link, kein echter Ordner/Datei".to_string())
+            } else {
+                Ok(())
+            }
+        })
 }
 
 #[tauri::command]
@@ -1719,8 +1731,19 @@ async fn sftp_download(state: State<'_, AppState>, server_id: String, path: Stri
     validate_sftp_path(&path)?;
     let mut guard = acquire_session(&state, &server_id).await?;
     let session = guard.as_mut().unwrap();
+    let quoted = games::shell_single_quote(&path);
+    // Same symlink guard as sftp_delete - a symlink here could otherwise read out any file the
+    // `gameserver` account has access to (or, via a dangling/absolute link, attempt to read
+    // outside the instance's own directory entirely), disguised as an innocuous save file.
+    let is_symlink = session
+        .exec(&format!("[ -L {quoted} ] && echo yes || echo no"))
+        .await
+        .map_err(|e| e.to_string())?;
+    if is_symlink.trim() == "yes" {
+        return Err("Verweigert: Ziel ist ein symbolischer Link, kein echter Ordner/Datei".to_string());
+    }
     let bytes = session
-        .exec_bytes(&format!("sudo cat {}", games::shell_single_quote(&path)))
+        .exec_bytes(&format!("sudo cat {quoted}"))
         .await
         .map_err(|e| e.to_string())?;
     std::fs::write(&local_path, bytes).map_err(|e| e.to_string())?;
