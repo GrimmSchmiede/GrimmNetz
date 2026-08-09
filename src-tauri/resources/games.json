@@ -187,7 +187,7 @@
         "steps": [
           "cd /home/gameserver/instances/{instance_id} && curl -L -o factorio.tar.xz \"https://factorio.com/get-download/stable/headless/linux64\" && tar -xJf factorio.tar.xz --strip-components=1 && rm factorio.tar.xz",
           "mkdir -p /home/gameserver/instances/{instance_id}/saves && cd /home/gameserver/instances/{instance_id} && ./bin/x64/factorio --create saves/server.zip",
-          "echo '{\"name\":\"GlimaNexus Factorio\",\"description\":\"\",\"tags\":[],\"max_players\":0,\"visibility\":{\"public\":false,\"lan\":true},\"username\":\"\",\"password\":\"\",\"token\":\"\",\"game_password\":\"\",\"require_user_verification\":true,\"max_upload_in_kilobytes_per_second\":0,\"max_upload_slots\":5,\"minimum_latency_in_ticks\":0,\"ignore_player_limit_for_returning_players\":false,\"allow_commands\":\"admins-only\",\"autosave_interval\":10,\"autosave_slots\":5,\"afk_autokick_interval\":0,\"auto_pause\":true,\"only_admins_can_pause_the_game\":true,\"autosave_only_on_server\":true}' > /home/gameserver/instances/{instance_id}/server-settings.json"
+          "echo '{\"name\":\"GrimmNetz Factorio\",\"description\":\"\",\"tags\":[],\"max_players\":0,\"visibility\":{\"public\":false,\"lan\":true},\"username\":\"\",\"password\":\"\",\"token\":\"\",\"game_password\":\"\",\"require_user_verification\":true,\"max_upload_in_kilobytes_per_second\":0,\"max_upload_slots\":5,\"minimum_latency_in_ticks\":0,\"ignore_player_limit_for_returning_players\":false,\"allow_commands\":\"admins-only\",\"autosave_interval\":10,\"autosave_slots\":5,\"afk_autokick_interval\":0,\"auto_pause\":true,\"only_admins_can_pause_the_game\":true,\"autosave_only_on_server\":true}' > /home/gameserver/instances/{instance_id}/server-settings.json"
         ]
       },
       "start_command": "./bin/x64/factorio --start-server saves/server.zip --server-settings server-settings.json",
@@ -195,7 +195,7 @@
         "file": "server-settings.json",
         "format": "json",
         "fields": [
-          { "key": "name", "label": "Server Name", "type": "text", "default": "GlimaNexus Factorio" },
+          { "key": "name", "label": "Server Name", "type": "text", "default": "GrimmNetz Factorio" },
           { "key": "max_players", "label": "Spieler Slots (0 = unbegrenzt)", "type": "number", "default": "0" },
           { "key": "game_password", "label": "Passwort", "type": "password", "default": "" }
         ]
@@ -259,7 +259,7 @@
           "/home/gameserver/.steamcmd/steamcmd.sh +force_install_dir /home/gameserver/instances/{instance_id} +login anonymous +app_update 896660 validate +quit"
         ]
       },
-      "start_command": "./valheim_server.x86_64 -name \"GlimaNexus Server\" -port 2456 -world \"Dedicated\" -password \"changeme\" -nographics -batchmode -crossplay",
+      "start_command": "./valheim_server.x86_64 -name \"GrimmNetz Server\" -port 2456 -world \"Dedicated\" -password \"changeme\" -nographics -batchmode -crossplay",
       "default_cpu_limit_percent": 150,
       "default_ram_limit_mb": 4096,
       "ports": [{ "port": 2456, "protocol": "udp" }]
@@ -278,7 +278,7 @@
           "/home/gameserver/.steamcmd/steamcmd.sh +force_install_dir /home/gameserver/instances/{instance_id} +login anonymous +app_update 1829350 validate +quit"
         ]
       },
-      "start_command": "./VRisingServer.x86_64 -persistentDataPath ./save-data -serverName \"GlimaNexus Server\"",
+      "start_command": "./VRisingServer.x86_64 -persistentDataPath ./save-data -serverName \"GrimmNetz Server\"",
       "default_cpu_limit_percent": 200,
       "default_ram_limit_mb": 6144,
       "ports": [

@@ -384,7 +384,7 @@ function App() {
           <div className="nx-user">
             <div className="nx-avatar" />
             <div>
-              <div>NovaUser</div>
+              <div>GrimmUser</div>
               <div style={{ color: "var(--nx-text-muted)", fontSize: 12 }}>
                 <span className="nx-status-dot" />
                 Online

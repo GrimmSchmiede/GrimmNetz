@@ -63,7 +63,7 @@ pub struct LocalSystemStats {
     pub net_down_kbps: f64,
 }
 
-/// Reads CPU/RAM/network usage of the machine GlimaNexus itself is running on
+/// Reads CPU/RAM/network usage of the machine GrimmNetz itself is running on
 /// (not a managed server) for the sidebar's local System Status widget.
 #[tauri::command]
 fn get_local_system_stats(state: State<'_, AppState>) -> Result<LocalSystemStats, String> {
@@ -466,7 +466,7 @@ async fn install_game(
     }
 
     let start_command = games::render_step(&template.start_command, &instance_id, ram_limit_mb);
-    let unit_name = format!("novanexus-{instance_id}");
+    let unit_name = format!("grimmnetz-{instance_id}");
     let unit_contents = provisioning::render_systemd_unit(
         &instance_id,
         &install_path,
@@ -546,7 +546,7 @@ fn signature_path_for_template(t: &GameTemplate) -> Option<String> {
     None
 }
 
-/// Module A/B: finds GlimaNexus-managed systemd units on the server that aren't in the local
+/// Module A/B: finds GrimmNetz-managed systemd units on the server that aren't in the local
 /// database yet - e.g. after reinstalling the app, or after an identifier change (like
 /// v0.1.23's rename) wipes everyone's local app data - and re-imports them so they show up in
 /// the UI again. The game itself, its systemd unit, and its firewall rules already live
@@ -570,7 +570,7 @@ async fn discover_instances(state: State<'_, AppState>, server_id: String) -> Re
     let session = guard.as_mut().unwrap();
 
     let unit_list = session
-        .exec("find /etc/systemd/system -maxdepth 1 -name 'novanexus-*.service' -printf '%f\\n' 2>/dev/null")
+        .exec("find /etc/systemd/system -maxdepth 1 -name 'grimmnetz-*.service' -printf '%f\\n' 2>/dev/null")
         .await
         .map_err(|e| e.to_string())?;
 
@@ -579,8 +579,10 @@ async fn discover_instances(state: State<'_, AppState>, server_id: String) -> Re
 
     for line in unit_list.lines() {
         let unit_name = line.trim().trim_end_matches(".service").to_string();
-        let instance_id = match unit_name.strip_prefix("novanexus-") {
-            Some(id) if !id.is_empty() => id.to_string(),
+        // Scheduled-restart trigger services (e.g. "grimmnetz-restart-<unit>-<id>") must never
+        // be mistaken for a game instance, or discovery would insert a bogus non-existent one.
+        let instance_id = match unit_name.strip_prefix("grimmnetz-") {
+            Some(id) if !id.is_empty() && !id.starts_with("restart-") => id.to_string(),
             _ => continue,
         };
         if known.contains(&instance_id) {
@@ -588,13 +590,8 @@ async fn discover_instances(state: State<'_, AppState>, server_id: String) -> Re
         }
         let install_path = format!("/home/gameserver/instances/{instance_id}");
 
-        // New installs write .grimmnetz-instance.json; older ones from before the rename may
-        // still only have the old filename - check both so their metadata isn't silently lost.
         let manifest_raw = session
-            .exec(&format!(
-                "sudo cat {install_path}/.grimmnetz-instance.json 2>/dev/null || \
-                 sudo cat {install_path}/.glimanexus-instance.json 2>/dev/null"
-            ))
+            .exec(&format!("sudo cat {install_path}/.grimmnetz-instance.json 2>/dev/null"))
             .await
             .unwrap_or_default();
         let manifest: Option<serde_json::Value> = serde_json::from_str(&manifest_raw).ok();
@@ -1040,7 +1037,7 @@ fn shift_time(hh: &str, mm: &str, delta_minutes: i32) -> (String, String) {
 /// `render_systemd_unit`) - the only way to get a `say ...` console command into a running
 /// instance, since these are plain systemd services with no other IPC channel.
 fn console_fifo_path(unit_name: &str) -> Option<String> {
-    let instance_id = unit_name.strip_prefix("novanexus-")?;
+    let instance_id = unit_name.strip_prefix("grimmnetz-")?;
     Some(format!("/run/grimmnetz-{instance_id}.console"))
 }
 
@@ -1076,7 +1073,7 @@ async fn list_scheduled_restarts(
     let prefix = format!("restart-{unit_name}-");
     let output = session
         .exec(&format!(
-            "for f in /etc/systemd/system/novanexus-{prefix}*.timer; do \
+            "for f in /etc/systemd/system/grimmnetz-{prefix}*.timer; do \
                [ -e \"$f\" ] || continue; \
                NAME=$(basename \"$f\" .timer); \
                CAL=$(grep -oP 'OnCalendar=\\*-\\*-\\* \\K[0-9:]+' \"$f\"); \
@@ -1086,7 +1083,7 @@ async fn list_scheduled_restarts(
         .await
         .map_err(|e| e.to_string())?;
 
-    let restart_prefix = format!("novanexus-{prefix}");
+    let restart_prefix = format!("grimmnetz-{prefix}");
     Ok(output
         .lines()
         .filter_map(|line| {
@@ -1117,7 +1114,7 @@ async fn add_scheduled_restart(
         .ok_or_else(|| "Ungültige Uhrzeit".to_string())?;
 
     let id = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
-    let full_name = format!("novanexus-{}", timer_name(&unit_name, &id)?);
+    let full_name = format!("grimmnetz-{}", timer_name(&unit_name, &id)?);
     let fifo = console_fifo_path(&unit_name).ok_or_else(|| "Ungültiger Bezeichner".to_string())?;
 
     // Fires 15 min before the time the user picked, counts down with in-game announcements,
@@ -1194,7 +1191,7 @@ async fn remove_scheduled_restart(
     unit_name: String,
     id: String,
 ) -> Result<(), String> {
-    let full_name = format!("novanexus-{}", timer_name(&unit_name, &id)?);
+    let full_name = format!("grimmnetz-{}", timer_name(&unit_name, &id)?);
     let mut guard = acquire_session(&state, &server_id).await?;
     let session = guard.as_mut().unwrap();
     session
@@ -1227,7 +1224,7 @@ fn validate_instance_path(install_path: &str, instance_id: &str) -> Result<(), S
     Ok(())
 }
 
-/// "Schlank" option: forgets the instance in GlimaNexus only, leaving the service and its
+/// "Schlank" option: forgets the instance in GrimmNetz only, leaving the service and its
 /// files untouched on the server (e.g. to keep a world/save for later, or re-add it as a
 /// server-side unit manually). Does not require an SSH connection.
 #[tauri::command]
@@ -1757,7 +1754,7 @@ pub fn run() {
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
-            let db_path = app_data_dir.join("novanexus.db");
+            let db_path = app_data_dir.join("grimmnetz.db");
             let db_key = keyring_store::get_or_create_db_key()?;
             let db = Db::open(db_path, &db_key)?;
             app.manage(AppState {

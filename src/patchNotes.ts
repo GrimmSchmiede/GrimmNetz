@@ -8,6 +8,16 @@ export type PatchNote = {
 // newest first. Not every internal commit needs its own entry.
 export const PATCH_NOTES: PatchNote[] = [
   {
+    version: "0.1.32",
+    date: "2026-08-09",
+    items: [
+      "Vollständiger Rebrand-Abschluss: App-ID, Zugangsdaten-Speicher und lokale Datenbank laufen jetzt komplett unter GrimmNetz statt GlimaNexus",
+      "Wichtig: Neuinstallation nötig, bestehende Server müssen einmalig neu eingerichtet werden (Passwörter neu eingeben)",
+      "Systemd-Dienste neuer Installationen heißen jetzt grimmnetz-* statt novanexus-*",
+      "Diverse Restnamen aus dem alten Branding entfernt (Platzhaltertexte, Dateinamen auf dem Server)",
+    ],
+  },
+  {
     version: "0.1.31",
     date: "2026-08-09",
     items: [

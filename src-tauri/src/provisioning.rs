@@ -16,7 +16,7 @@ pub async fn ensure_passwordless_sudo(ssh: &mut SshSession, username: &str, pass
     // `sudo` must be the head of the exec'd process (no upstream pipe), otherwise whatever
     // feeds it becomes the thing consuming our piped stdin instead of sudo's password prompt.
     let script = format!(
-        "sudo -S -p '' bash -c \"echo '{username} ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/novanexus && chmod 440 /etc/sudoers.d/novanexus\""
+        "sudo -S -p '' bash -c \"echo '{username} ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/grimmnetz && chmod 440 /etc/sudoers.d/grimmnetz\""
     );
     let stdin = format!("{password}\n");
     let output = ssh.exec_with_stdin(&script, stdin.as_bytes()).await?;
@@ -133,7 +133,7 @@ pub async fn bootstrap_server(ssh: &mut SshSession, timezone: Option<&str>) -> R
 async fn limit_journal_size(ssh: &mut SshSession) -> Result<()> {
     ssh.exec(
         "sudo mkdir -p /etc/systemd/journald.conf.d && \
-         echo -e '[Journal]\\nSystemMaxUse=200M' | sudo tee /etc/systemd/journald.conf.d/glimanexus.conf > /dev/null && \
+         echo -e '[Journal]\\nSystemMaxUse=200M' | sudo tee /etc/systemd/journald.conf.d/grimmnetz.conf > /dev/null && \
          sudo systemctl restart systemd-journald",
     )
     .await?;
@@ -181,7 +181,7 @@ pub fn render_systemd_unit(
     let memory_high_mb = (ram_limit_mb as f64 * 0.9) as u32;
     format!(
         "[Unit]\n\
-         Description=GlimaNexus Gameserver Instance {instance_id}\n\
+         Description=GrimmNetz Gameserver Instance {instance_id}\n\
          After=network.target\n\n\
          [Service]\n\
          Type=simple\n\
