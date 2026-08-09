@@ -87,7 +87,8 @@
 /* Global sidebar */
 .nx-sidebar {
   background: var(--nx-panel);
-  border-right: 1px solid var(--nx-border);
+  border-right: none;
+  position: relative;
   display: flex;
   flex-direction: column;
   padding: 16px 12px;
@@ -259,9 +260,22 @@
 /* Server list column */
 .nx-server-list {
   background: var(--nx-bg);
-  border-right: 1px solid var(--nx-border);
+  border-right: none;
+  position: relative;
   padding: 16px;
   overflow-y: auto;
+}
+
+.nx-sidebar::after,
+.nx-server-list::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  background: linear-gradient(to bottom, transparent 0%, color-mix(in srgb, var(--nx-accent) 40%, transparent) 50%, transparent 100%);
+  pointer-events: none;
 }
 
 .nx-server-list h2 {
@@ -960,7 +974,7 @@
 
 .nx-chart-card,
 .nx-fact-card {
-  border: 1px solid var(--nx-border);
+  border: 1px solid color-mix(in srgb, var(--nx-accent) 40%, transparent);
   border-radius: var(--nx-radius);
   padding: 14px;
   background: var(--nx-panel);
@@ -1058,7 +1072,7 @@
 }
 
 .nx-resource-bar-card {
-  border: 1px solid var(--nx-border);
+  border: 1px solid color-mix(in srgb, var(--nx-accent) 40%, transparent);
   border-radius: var(--nx-radius);
   background: var(--nx-panel);
   padding: 16px;
@@ -1189,7 +1203,7 @@ input[type="time"]::-webkit-calendar-picker-indicator {
 }
 
 .nx-console {
-  background: #05080c;
+  background: #000000;
   border: 1px solid var(--nx-border);
   border-radius: var(--nx-radius);
   padding: 12px;
