@@ -67,6 +67,7 @@ export type GameTemplate = {
   subtitle: string;
   icon: string;
   requires: string[];
+  install: { type: string; app_id?: number };
   start_command: string;
   default_cpu_limit_percent: number;
   default_ram_limit_mb: number;

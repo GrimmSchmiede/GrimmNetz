@@ -725,6 +725,26 @@ function App() {
               })}
             </div>}
 
+            {!openInstanceId && showStoreDialog && selectedServerId && (
+              <GameStoreDialog
+                serverId={selectedServerId}
+                onClose={() => setShowStoreDialog(false)}
+                onInstalled={(instance) => {
+                  setInstances((prev) => [...prev, instance]);
+                  setShowStoreDialog(false);
+                }}
+                onInstallStart={(game) => {
+                  setInstallProgress("");
+                  setInstallingGame(game);
+                }}
+                onInstallProgress={setInstallProgress}
+                onInstallDone={() => {
+                  setInstallingGame(null);
+                  setInstallProgress("");
+                }}
+              />
+            )}
+
             {openInstanceId &&
               (() => {
                 const instance = instances.find((i) => i.id === openInstanceId);
@@ -800,26 +820,6 @@ function App() {
 
       {sftpServer && (
         <SftpBrowserDialog serverId={sftpServer.id} serverName={sftpServer.name} onClose={() => setSftpServer(null)} />
-      )}
-
-      {showStoreDialog && selectedServerId && (
-        <GameStoreDialog
-          serverId={selectedServerId}
-          onClose={() => setShowStoreDialog(false)}
-          onInstalled={(instance) => {
-            setInstances((prev) => [...prev, instance]);
-            setShowStoreDialog(false);
-          }}
-          onInstallStart={(game) => {
-            setInstallProgress("");
-            setInstallingGame(game);
-          }}
-          onInstallProgress={setInstallProgress}
-          onInstallDone={() => {
-            setInstallingGame(null);
-            setInstallProgress("");
-          }}
-        />
       )}
 
       {showPatchNotes && <PatchNotesDialog onClose={() => setShowPatchNotes(false)} />}

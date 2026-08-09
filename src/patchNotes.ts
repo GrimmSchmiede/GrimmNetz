@@ -8,6 +8,15 @@ export type PatchNote = {
 // newest first. Not every internal commit needs its own entry.
 export const PATCH_NOTES: PatchNote[] = [
   {
+    version: "0.1.40",
+    date: "2026-08-09",
+    items: [
+      "App-Store komplett überarbeitet: läuft jetzt direkt unter 'Installierte Gameserver' statt als eigenes Fenster, 3-Spalten-Kachelansicht, Suche, eigener Scrollbereich",
+      "Neu: Live-Versionsanzeige pro Spiel (echte Steam-Build-Nummer bzw. aktuelle Version von Minecraft/Factorio) statt statischem Text",
+      "Getestet-Status jetzt als Text + Farbpunkt (Grün/Gelb) mit Erklärung beim Hovern, statt nur einem Symbol",
+    ],
+  },
+  {
     version: "0.1.39",
     date: "2026-08-09",
     items: [
