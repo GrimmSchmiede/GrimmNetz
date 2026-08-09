@@ -518,7 +518,7 @@ async fn install_game(
         "cpu_limit_percent": record.cpu_limit_percent,
         "ram_limit_mb": record.ram_limit_mb,
     });
-    let manifest_path = format!("{}/.glimanexus-instance.json", record.install_path);
+    let manifest_path = format!("{}/.grimmnetz-instance.json", record.install_path);
     let _ = session
         .exec_with_stdin(
             &format!("sudo -u gameserver tee {} > /dev/null", games::shell_single_quote(&manifest_path)),
@@ -552,7 +552,7 @@ fn signature_path_for_template(t: &GameTemplate) -> Option<String> {
 /// the UI again. The game itself, its systemd unit, and its firewall rules already live
 /// entirely on the server; the only thing that previously existed nowhere but our local
 /// SQLite DB was which game/display name/limits an instance had - which `install_game` now
-/// also writes into a small `.glimanexus-instance.json` manifest alongside the game files.
+/// also writes into a small `.grimmnetz-instance.json` manifest alongside the game files.
 /// For instances installed before that manifest existed, falls back to guessing the game from
 /// a characteristic file each template's start command references.
 #[tauri::command]
@@ -588,8 +588,13 @@ async fn discover_instances(state: State<'_, AppState>, server_id: String) -> Re
         }
         let install_path = format!("/home/gameserver/instances/{instance_id}");
 
+        // New installs write .grimmnetz-instance.json; older ones from before the rename may
+        // still only have the old filename - check both so their metadata isn't silently lost.
         let manifest_raw = session
-            .exec(&format!("sudo cat {install_path}/.glimanexus-instance.json 2>/dev/null"))
+            .exec(&format!(
+                "sudo cat {install_path}/.grimmnetz-instance.json 2>/dev/null || \
+                 sudo cat {install_path}/.glimanexus-instance.json 2>/dev/null"
+            ))
             .await
             .unwrap_or_default();
         let manifest: Option<serde_json::Value> = serde_json::from_str(&manifest_raw).ok();
@@ -1572,6 +1577,146 @@ async fn restore_backup(
     Ok(())
 }
 
+/// Every SFTP path must resolve inside `/home/gameserver` (the isolated account every game
+/// runs as) - "Vollzugriff" means the whole gameserver tree across all instances/backups, not
+/// literal root filesystem access, which stays off-limits from the app no matter what.
+fn validate_sftp_path(path: &str) -> Result<(), String> {
+    const ROOT: &str = "/home/gameserver";
+    if path != ROOT && !path.starts_with(&format!("{ROOT}/")) {
+        return Err("Pfad außerhalb des zulässigen Bereichs".to_string());
+    }
+    if path.contains("..") {
+        return Err("Ungültiger Pfad".to_string());
+    }
+    Ok(())
+}
+
+/// Module E ("Vollzugriff"/SFTP): lists any directory under `/home/gameserver`, not just an
+/// instance's own install/backups folder - for admins who want to poke around the whole tree
+/// (shared mod caches, manual edits, orphaned files from a deleted instance, etc.).
+#[tauri::command]
+async fn sftp_list(state: State<'_, AppState>, server_id: String, path: String) -> Result<Vec<DirEntry>, String> {
+    validate_sftp_path(&path)?;
+    let mut guard = acquire_session(&state, &server_id).await?;
+    let session = guard.as_mut().unwrap();
+    let raw = session
+        .exec(&format!(
+            "sudo find {} -mindepth 1 -maxdepth 1 -printf '%y|%f|%s\\n' 2>/dev/null",
+            games::shell_single_quote(&path)
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut entries: Vec<DirEntry> = raw
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, '|');
+            let type_char = parts.next()?;
+            let name = parts.next()?.to_string();
+            let size_bytes = parts.next()?.parse().ok()?;
+            Some(DirEntry { name, is_dir: type_char == "d", size_bytes })
+        })
+        .collect();
+    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    Ok(entries)
+}
+
+#[tauri::command]
+async fn sftp_mkdir(state: State<'_, AppState>, server_id: String, path: String) -> Result<(), String> {
+    validate_sftp_path(&path)?;
+    let mut guard = acquire_session(&state, &server_id).await?;
+    let session = guard.as_mut().unwrap();
+    session
+        .exec(&format!(
+            "sudo -u gameserver mkdir -p {}",
+            games::shell_single_quote(&path)
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Refuses to ever delete `/home/gameserver` itself - every other path inside it is fair game,
+/// same "everything below the isolated account, never the account root or above" rule as list.
+#[tauri::command]
+async fn sftp_delete(state: State<'_, AppState>, server_id: String, path: String) -> Result<(), String> {
+    validate_sftp_path(&path)?;
+    if path == "/home/gameserver" {
+        return Err("Der Basisordner selbst kann nicht gelöscht werden".to_string());
+    }
+    let mut guard = acquire_session(&state, &server_id).await?;
+    let session = guard.as_mut().unwrap();
+    session
+        .exec(&format!("sudo rm -rf {}", games::shell_single_quote(&path)))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn sftp_rename(state: State<'_, AppState>, server_id: String, from: String, to: String) -> Result<(), String> {
+    validate_sftp_path(&from)?;
+    validate_sftp_path(&to)?;
+    let mut guard = acquire_session(&state, &server_id).await?;
+    let session = guard.as_mut().unwrap();
+    session
+        .exec(&format!(
+            "sudo -u gameserver mv {} {}",
+            games::shell_single_quote(&from),
+            games::shell_single_quote(&to)
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Downloads any file under the SFTP root to a location the user picks via a native save dialog
+/// - unlike backups, there's no single sensible default folder for an arbitrary file.
+#[tauri::command]
+async fn sftp_download(state: State<'_, AppState>, server_id: String, path: String, local_path: String) -> Result<(), String> {
+    validate_sftp_path(&path)?;
+    let mut guard = acquire_session(&state, &server_id).await?;
+    let session = guard.as_mut().unwrap();
+    let bytes = session
+        .exec_bytes(&format!("sudo cat {}", games::shell_single_quote(&path)))
+        .await
+        .map_err(|e| e.to_string())?;
+    std::fs::write(&local_path, bytes).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn sftp_upload(
+    state: State<'_, AppState>,
+    server_id: String,
+    remote_dir: String,
+    local_path: String,
+    on_progress: Channel<UploadEvent>,
+) -> Result<(), String> {
+    validate_sftp_path(&remote_dir)?;
+    let filename = std::path::Path::new(&local_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "Ungültiger Dateiname".to_string())?
+        .to_string();
+    let data = std::fs::read(&local_path).map_err(|e| e.to_string())?;
+    let remote_path = format!("{remote_dir}/{filename}");
+
+    let mut guard = acquire_session(&state, &server_id).await?;
+    let session = guard.as_mut().unwrap();
+    session
+        .exec_with_stdin_progress(
+            &format!("sudo -u gameserver tee {} > /dev/null", games::shell_single_quote(&remote_path)),
+            &data,
+            |bytes_sent, total_bytes| {
+                let _ = on_progress.send(UploadEvent::Progress { bytes_sent, total_bytes });
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Module C: streams `journalctl -fu <unit>` live, line-by-line, to the frontend via a Tauri
 /// Channel. Runs as a detached background task so the command returns immediately and the
 /// UI thread is never blocked, even while the remote log keeps following indefinitely.
@@ -1652,6 +1797,12 @@ pub fn run() {
             delete_instance,
             forget_instance,
             list_directory,
+            sftp_list,
+            sftp_mkdir,
+            sftp_delete,
+            sftp_rename,
+            sftp_download,
+            sftp_upload,
             create_backup,
             get_local_backup_dir,
             upload_backup,

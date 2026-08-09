@@ -9,6 +9,7 @@ import GameStoreDialog from "./GameStoreDialog";
 import PatchNotesDialog from "./PatchNotesDialog";
 import DirectoryBrowserDialog from "./DirectoryBrowserDialog";
 import EditServerDialog from "./EditServerDialog";
+import SftpBrowserDialog from "./SftpBrowserDialog";
 import FirewallPromptDialog from "./FirewallPromptDialog";
 import InstanceDetail from "./InstanceDetail";
 import grimmNetzLogo from "./assets/grimmnetz_logo.png";
@@ -80,6 +81,7 @@ function App() {
   const [browsingInstance, setBrowsingInstance] = useState<{ instance: InstanceRecord; target: "install" | "backups" } | null>(null);
   const [openServerMenuId, setOpenServerMenuId] = useState<string | null>(null);
   const [editingServer, setEditingServer] = useState<ServerRecord | null>(null);
+  const [sftpServer, setSftpServer] = useState<ServerRecord | null>(null);
   const [firewallPromptServer, setFirewallPromptServer] = useState<ServerRecord | null>(null);
   const [discovering, setDiscovering] = useState(false);
   const [discoverError, setDiscoverError] = useState("");
@@ -493,7 +495,7 @@ function App() {
                       <button onClick={() => { setOpenServerMenuId(null); setEditingServer(server); }}>
                         Server bearbeiten
                       </button>
-                      <button disabled title="Bald verfügbar">
+                      <button onClick={() => { setOpenServerMenuId(null); setSftpServer(server); }}>
                         Vollzugriff (SFTP)
                       </button>
                     </div>
@@ -794,6 +796,10 @@ function App() {
             setEditingServer(null);
           }}
         />
+      )}
+
+      {sftpServer && (
+        <SftpBrowserDialog serverId={sftpServer.id} serverName={sftpServer.name} onClose={() => setSftpServer(null)} />
       )}
 
       {showStoreDialog && selectedServerId && (

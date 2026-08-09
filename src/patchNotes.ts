@@ -8,6 +8,15 @@ export type PatchNote = {
 // newest first. Not every internal commit needs its own entry.
 export const PATCH_NOTES: PatchNote[] = [
   {
+    version: "0.1.31",
+    date: "2026-08-09",
+    items: [
+      "Neu: Vollzugriff (SFTP) - Dateibrowser für den kompletten Server-Ordner (hoch-/runterladen, löschen, Ordner anlegen), erreichbar über das ⋯-Menü eines Servers",
+      "Fix: Rahmen/Trennlinien im Türkis-Design angepasst, Konsole jetzt tiefschwarz",
+      "Instanz-Metadatei heißt jetzt .grimmnetz-instance.json statt .glimanexus-instance.json (Rebrand-Rest)",
+    ],
+  },
+  {
     version: "0.1.30",
     date: "2026-08-09",
     items: [
