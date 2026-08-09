@@ -8,6 +8,13 @@ export type PatchNote = {
 // newest first. Not every internal commit needs its own entry.
 export const PATCH_NOTES: PatchNote[] = [
   {
+    version: "0.1.34",
+    date: "2026-08-09",
+    items: [
+      "Fix: 'Firewall aktivieren' schlug immer fehl ('SSH-Port nicht gefunden') - die Prüfung nutzte 'ufw status', das im inaktiven Zustand nie Regeln anzeigt, egal ob sie existieren",
+    ],
+  },
+  {
     version: "0.1.33",
     date: "2026-08-09",
     items: [

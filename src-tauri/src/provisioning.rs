@@ -269,8 +269,11 @@ pub async fn enable_firewall_with_rollback(ssh: &mut SshSession, family: DistroF
             // Don't trust the allow command silently succeeding - actually check the rule
             // landed before ever switching the firewall to default-deny. If `ufw allow`
             // swallowed an error, enabling now would lock the SSH port out completely.
-            let status = ssh.exec("sudo ufw status 2>/dev/null").await.unwrap_or_default();
-            if !status.lines().any(|l| l.contains(&format!("{ssh_port}/tcp")) && l.contains("ALLOW")) {
+            // Must use `ufw show added`, not `ufw status` - the latter only ever lists rules
+            // while the firewall is already active, so checking it here (before `ufw enable`)
+            // would always come back empty and falsely abort every single time.
+            let added = ssh.exec("sudo ufw show added 2>/dev/null").await.unwrap_or_default();
+            if !added.lines().any(|l| l.contains(&format!("allow {ssh_port}/tcp"))) {
                 let _ = cancel_firewall_rollback(ssh, &job_id).await;
                 return Err(anyhow!(
                     "SSH-Port {ssh_port}/tcp wurde nicht in den ufw-Regeln gefunden - \
