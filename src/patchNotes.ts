@@ -8,6 +8,13 @@ export type PatchNote = {
 // newest first. Not every internal commit needs its own entry.
 export const PATCH_NOTES: PatchNote[] = [
   {
+    version: "0.1.33",
+    date: "2026-08-09",
+    items: [
+      "Fix: 'Komplett deinstallieren' ließ geplante Neustarts der gelöschten Instanz aktiv - liefen ewig weiter und versuchten einen nicht mehr existierenden Dienst neu zu starten",
+    ],
+  },
+  {
     version: "0.1.32",
     date: "2026-08-09",
     items: [

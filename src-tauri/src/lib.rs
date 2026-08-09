@@ -1265,6 +1265,19 @@ async fn delete_instance(
         .exec(&format!("sudo rm -f /etc/systemd/system/{unit_name}.service"))
         .await
         .map_err(|e| e.to_string())?;
+    // Any scheduled restarts for this instance would otherwise keep firing forever afterwards,
+    // trying to restart a systemd unit that no longer exists.
+    session
+        .exec(&format!(
+            "for f in /etc/systemd/system/grimmnetz-restart-{unit_name}-*; do \
+               [ -e \"$f\" ] || continue; \
+               NAME=$(basename \"$f\" | sed -E 's/\\.(timer|service)$//'); \
+               sudo systemctl disable --now \"$NAME.timer\" 2>/dev/null; \
+               sudo rm -f \"$f\"; \
+             done"
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
     session.exec("sudo systemctl daemon-reload").await.map_err(|e| e.to_string())?;
     session
         .exec(&format!("sudo rm -rf {install_path}"))
