@@ -113,7 +113,12 @@ export default function GameStoreDialog({ serverId, onClose, onInstalled, onInst
         return;
       } catch (err) {
         const message = String(err);
-        const looksLikeDrop = message.includes("Zeitüberschreitung") || message.includes("Verbindung");
+        // Host-Key-Mismatch ist eine echte Sicherheitswarnung (moeglicher Man-in-the-Middle-Angriff)
+        // und darf niemals als bloesser Verbindungsabbruch automatisch wiederholt werden.
+        const isSecurityWarning = message.includes("Host-Key");
+        const looksLikeDrop =
+          !isSecurityWarning &&
+          (message.includes("Zeitüberschreitung") || message.includes("Verbindung"));
         if (!looksLikeDrop) throw err;
         onInstallProgress("Verbindung unterbrochen, verbinde erneut...");
         await new Promise((resolve) => setTimeout(resolve, 2000));
