@@ -80,23 +80,44 @@ export default function GameStoreDialog({ serverId, onClose, onInstalled, onInst
     setError("");
     onInstallStart(game);
     try {
-      const onEvent = new Channel<InstallEvent>();
-      onEvent.onmessage = (event) => {
-        if (event.event === "step") onInstallProgress(event.label);
-        else onInstallProgress(`${event.phase}: ${event.percent.toFixed(0)}%`);
-      };
-      const instance = await invoke<InstanceRecord>("install_game", {
-        serverId,
-        gameId: game.id,
-        displayName: game.name,
-        onEvent,
-      });
-      onInstalled(instance);
+      const instanceId = await invoke<string>("start_install", { serverId, gameId: game.id });
+      await attachAndWait(instanceId, game.id, game.name);
     } catch (err) {
       setError(String(err));
     } finally {
       setInstallingId(null);
       onInstallDone();
+    }
+  }
+
+  // The install itself runs entirely server-side now, so a dropped SSH/tail connection is not
+  // a failed install - just reattach and keep going. Only a real GRIMMNETZ_FAILED (surfaced as
+  // a rejected attach_install_stream call whose message does NOT look like a connection drop)
+  // should stop the retry loop and surface as an actual error to the user.
+  async function attachAndWait(instanceId: string, gameId: string, displayName: string) {
+    for (;;) {
+      try {
+        const onEvent = new Channel<InstallEvent>();
+        onEvent.onmessage = (event) => {
+          if (event.event === "step") onInstallProgress(event.label);
+          else onInstallProgress(`${event.phase}: ${event.percent.toFixed(0)}%`);
+        };
+        const instance = await invoke<InstanceRecord>("attach_install_stream", {
+          serverId,
+          instanceId,
+          gameId,
+          displayName,
+          onEvent,
+        });
+        onInstalled(instance);
+        return;
+      } catch (err) {
+        const message = String(err);
+        const looksLikeDrop = message.includes("Zeitüberschreitung") || message.includes("Verbindung");
+        if (!looksLikeDrop) throw err;
+        onInstallProgress("Verbindung unterbrochen, verbinde erneut...");
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
     }
   }
 
