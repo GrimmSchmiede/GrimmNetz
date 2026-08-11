@@ -235,7 +235,18 @@ function App() {
   // should stop the retry and surface as an actual error.
   async function attachPendingInstall(pending: ActiveInstall) {
     if (!selectedServerId) return;
-    setInstallingGame({ id: pending.game_id, name: pending.instance_id } as GameTemplate);
+    // list_active_installs only knows game_id, not a human display name - look the real name up
+    // from the game templates instead of falling back to the raw instance UUID as the server's
+    // name (which is what happened before this: a perfectly good reattach, just cosmetically ugly).
+    let displayName = pending.instance_id;
+    try {
+      const templates = await invoke<GameTemplate[]>("list_games");
+      const template = templates.find((t) => t.id === pending.game_id);
+      if (template) displayName = template.name;
+    } catch {
+      // best-effort - falls back to the instance id, still functionally correct
+    }
+    setInstallingGame({ id: pending.game_id, name: displayName } as GameTemplate);
     setInstallProgress("");
     setPendingInstallError("");
     try {
@@ -250,7 +261,7 @@ function App() {
             serverId: selectedServerId,
             instanceId: pending.instance_id,
             gameId: pending.game_id,
-            displayName: pending.instance_id,
+            displayName,
             onEvent,
           });
           setInstances((prev) => [...prev, instance]);
