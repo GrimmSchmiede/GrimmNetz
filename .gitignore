@@ -26,3 +26,4 @@ dist-ssr
 # Tauri updater signing key - NEVER commit, keep secret, back up separately
 src-tauri/*.key
 
+.worktrees/
