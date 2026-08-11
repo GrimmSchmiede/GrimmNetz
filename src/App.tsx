@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import "./App.css";
 import UpdateBanner from "./UpdateBanner";
@@ -16,7 +16,7 @@ import InstanceDetail from "./InstanceDetail";
 import grimmNetzLogo from "./assets/grimmnetz_logo.png";
 import GameIcon from "./GameIcon";
 import DistroIcon from "./DistroIcon";
-import type { ActiveInstall, GameTemplate, InstanceRecord, InstanceStatus, LocalSystemStats, ServerRecord, VersionInfo } from "./types";
+import type { ActiveInstall, GameTemplate, InstallEvent, InstanceRecord, InstanceStatus, LocalSystemStats, ServerRecord, VersionInfo } from "./types";
 
 type HardwareStats = {
   cpu_percent: number;
@@ -88,6 +88,7 @@ function App() {
   const [discoverError, setDiscoverError] = useState("");
   const [discoverResult, setDiscoverResult] = useState<number | null>(null);
   const [pendingInstalls, setPendingInstalls] = useState<ActiveInstall[]>([]);
+  const [pendingInstallError, setPendingInstallError] = useState("");
 
   async function discoverInstances() {
     if (!selectedServerId) return;
@@ -224,6 +225,51 @@ function App() {
       // Backend command not reachable (e.g. dev preview outside Tauri) - keep empty list.
     } finally {
       setLoading(false);
+    }
+  }
+
+  // Reattaches directly from the "still installing" banner - no detour through opening the
+  // App-Store first. Same reconnect-tolerant loop as the App-Store's own install flow: a dropped
+  // tail is not a failure since the install itself runs entirely server-side regardless of this
+  // connection's state, only a real GRIMMNETZ_FAILED (never matching "Verbindung"/"Host-Key")
+  // should stop the retry and surface as an actual error.
+  async function attachPendingInstall(pending: ActiveInstall) {
+    if (!selectedServerId) return;
+    setInstallingGame({ id: pending.game_id, name: pending.instance_id } as GameTemplate);
+    setInstallProgress("");
+    setPendingInstallError("");
+    try {
+      for (;;) {
+        try {
+          const onEvent = new Channel<InstallEvent>();
+          onEvent.onmessage = (event) => {
+            if (event.event === "step") setInstallProgress(event.label);
+            else setInstallProgress(`${event.phase}: ${event.percent.toFixed(0)}%`);
+          };
+          const instance = await invoke<InstanceRecord>("attach_install_stream", {
+            serverId: selectedServerId,
+            instanceId: pending.instance_id,
+            gameId: pending.game_id,
+            displayName: pending.instance_id,
+            onEvent,
+          });
+          setInstances((prev) => [...prev, instance]);
+          setPendingInstalls((prev) => prev.filter((p) => p.instance_id !== pending.instance_id));
+          return;
+        } catch (err) {
+          const message = String(err);
+          const isSecurityWarning = message.includes("Host-Key");
+          const looksLikeDrop = !isSecurityWarning && (message.includes("Zeitüberschreitung") || message.includes("Verbindung"));
+          if (!looksLikeDrop) throw err;
+          setInstallProgress("Verbindung unterbrochen, verbinde erneut...");
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
+      }
+    } catch (err) {
+      setPendingInstallError(String(err));
+    } finally {
+      setInstallingGame(null);
+      setInstallProgress("");
     }
   }
 
@@ -617,13 +663,18 @@ function App() {
                     style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
                   >
                     <span>Installation läuft im Hintergrund weiter: {p.instance_id.slice(0, 8)}...</span>
-                    <button className="nx-btn nx-btn-primary" onClick={() => setShowStoreDialog(true)}>
+                    <button
+                      className="nx-btn nx-btn-primary"
+                      disabled={installingGame !== null}
+                      onClick={() => attachPendingInstall(p)}
+                    >
                       Fortschritt anzeigen
                     </button>
                   </div>
                 ))}
               </div>
             )}
+            {!openInstanceId && pendingInstallError && <p style={{ color: "var(--nx-danger)", fontSize: 12 }}>{pendingInstallError}</p>}
             {!openInstanceId && discoverError && <p style={{ color: "var(--nx-danger)", fontSize: 12 }}>{discoverError}</p>}
             {!openInstanceId && discoverResult !== null && (
               <p style={{ color: "var(--nx-success)", fontSize: 12 }}>
