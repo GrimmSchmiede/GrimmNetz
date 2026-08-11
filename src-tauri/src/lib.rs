@@ -446,10 +446,22 @@ async fn start_install(state: State<'_, AppState>, server_id: String, game_id: S
     let unit_name = format!("grimmnetz-{instance_id}");
     let install_unit_name = format!("grimmnetz-install-{instance_id}");
 
-    // Same ownership fix as the old install_game: /home/gameserver is root-owned, the install
-    // script itself runs each step as `gameserver`, so the dir needs to belong to that user first.
+    // Directory starts root-owned (default for `mkdir` run as root) - install.sh gets written
+    // and locked down to root-only (0700) BEFORE the directory is ever handed to `gameserver`,
+    // so a process already running as `gameserver` (e.g. a compromised sibling game server -
+    // every instance shares that one unprivileged account) can never race-replace the script
+    // that's about to run as root. `chown` without `-R` only affects the directory entry itself,
+    // not files already inside it, so install.sh/.grimmnetz-game-id stay root-owned afterwards.
+    session.exec(&format!("sudo mkdir -p {install_path}")).await.map_err(|e| e.to_string())?;
+
+    // Recorded so list_active_installs can report which game an in-progress/orphaned install
+    // belongs to - nothing else persists game_id anywhere before GRIMMNETZ_DONE writes the
+    // actual game record, and a reattaching app/second PC needs it to find the right template.
     session
-        .exec(&format!("sudo mkdir -p {install_path} && sudo chown gameserver:gameserver {install_path}"))
+        .exec(&format!(
+            "echo {} | sudo tee {install_path}/.grimmnetz-game-id > /dev/null",
+            games::shell_single_quote(&game_id)
+        ))
         .await
         .map_err(|e| e.to_string())?;
 
@@ -457,8 +469,16 @@ async fn start_install(state: State<'_, AppState>, server_id: String, game_id: S
     let escaped_script = script.replace('\'', "'\\''");
     session
         .exec(&format!(
-            "echo '{escaped_script}' | sudo tee {install_path}/install.sh > /dev/null && sudo chmod +x {install_path}/install.sh"
+            "echo '{escaped_script}' | sudo tee {install_path}/install.sh > /dev/null && sudo chmod 700 {install_path}/install.sh"
         ))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Now safe to hand the directory itself to gameserver - install.sh (root:root, 0700) is
+    // already immutable to that account, and this is what lets the per-step `sudo -u gameserver`
+    // commands inside the script actually write downloaded game files into this directory.
+    session
+        .exec(&format!("sudo chown gameserver:gameserver {install_path}"))
         .await
         .map_err(|e| e.to_string())?;
 
@@ -479,8 +499,12 @@ async fn start_install(state: State<'_, AppState>, server_id: String, game_id: S
     provisioning::install_systemd_unit(session, &install_unit_name, &install_unit_contents)
         .await
         .map_err(|e| e.to_string())?;
+    // `--no-block`: without it, `systemctl start` on a Type=oneshot unit waits for ExecStart to
+    // finish before returning - i.e. for the ENTIRE install to complete - which blows straight
+    // through the SSH exec timeout (20s) on any real install. `--no-block` just queues the start
+    // job and returns immediately, which is exactly what "kick off and observe separately" needs.
     session
-        .exec(&format!("sudo systemctl start {install_unit_name}"))
+        .exec(&format!("sudo systemctl start --no-block {install_unit_name}"))
         .await
         .map_err(|e| e.to_string())?;
 
@@ -519,7 +543,9 @@ async fn list_active_installs(state: State<'_, AppState>, server_id: String) -> 
                tail -c 4096 \"$log\" | grep -qE 'GRIMMNETZ_DONE|GRIMMNETZ_FAILED' && continue; \
                unit=\"grimmnetz-install-$id\"; \
                active=$(systemctl is-active \"$unit\" 2>/dev/null); \
-               { [ \"$active\" = \"active\" ] || [ \"$active\" = \"activating\" ]; } && echo \"$id\"; \
+               { [ \"$active\" = \"active\" ] || [ \"$active\" = \"activating\" ]; } || continue; \
+               gid=$(cat \"$d/.grimmnetz-game-id\" 2>/dev/null); \
+               echo \"$id|$gid\"; \
              done";
 
     let mut guard = acquire_session(&state, &server_id).await?;
@@ -541,9 +567,13 @@ async fn list_active_installs(state: State<'_, AppState>, server_id: String) -> 
 
     Ok(output
         .lines()
-        .map(|l| l.trim())
-        .filter(|id| !id.is_empty() && !known_ids.contains(*id))
-        .map(|id| ActiveInstall { instance_id: id.to_string(), game_id: String::new(), running: true })
+        .filter_map(|line| {
+            let (id, gid) = line.trim().split_once('|')?;
+            if id.is_empty() || known_ids.contains(id) {
+                return None;
+            }
+            Some(ActiveInstall { instance_id: id.to_string(), game_id: gid.to_string(), running: true })
+        })
         .collect())
 }
 
@@ -576,6 +606,7 @@ async fn attach_install_stream(
     );
 
     let mut failure: Option<String> = None;
+    let mut done = false;
     let mut total_steps = template.install.steps.len();
     session
         .exec_stream_lines(&tail_cmd, |line| {
@@ -586,6 +617,8 @@ async fn attach_install_stream(
                     total_steps = total.parse().unwrap_or(total_steps);
                     let _ = on_event.send(InstallEvent::Step { label: format!("Schritt {n}/{total}") });
                 }
+            } else if line.starts_with("GRIMMNETZ_DONE") {
+                done = true;
             } else if let Some(msg) = line.strip_prefix("GRIMMNETZ_FAILED:") {
                 failure = Some(msg.to_string());
             } else if let Some((percent, phase)) = parse_steamcmd_progress(&line) {
@@ -597,6 +630,12 @@ async fn attach_install_stream(
 
     if let Some(msg) = failure {
         return Err(msg);
+    }
+    // The tail pipeline can end without either marker (log deleted, unit killed outside the
+    // normal fail() path, ...) - treating that as success would insert a phantom instance for a
+    // game that never actually finished installing.
+    if !done {
+        return Err("Verbindung zum Install-Log verloren, bevor die Installation abgeschlossen war - erneut versuchen.".to_string());
     }
 
     let _ = total_steps; // only used to enrich the label above, no further use once done
