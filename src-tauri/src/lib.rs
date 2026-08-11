@@ -595,8 +595,13 @@ async fn attach_install_stream(
     // awk exits (closing its stdin pipe) the moment it sees the DONE/FAILED marker, which sends
     // tail -f a SIGPIPE and ends the whole pipeline - that's what makes exec_stream_lines return
     // instead of blocking forever the way a bare `tail -f` would.
+    // Both `sudo` (same reason as list_active_installs: /home/gameserver is 0750, the SSH login
+    // user can't traverse into it at all) and `--retry` (install.log doesn't exist yet for the
+    // brief moment between `systemctl start --no-block` returning and the unit's ExecStart
+    // actually opening its redirect - without --retry, tail fails instantly on the missing file,
+    // which this function used to misreport as "connection lost" on every single fresh install).
     let tail_cmd = format!(
-        "tail -f -n +1 {install_path}/install.log 2>/dev/null | \
+        "sudo tail -f --retry -n +1 {install_path}/install.log 2>/dev/null | \
          awk '{{ print; fflush(); if ($0 ~ /^GRIMMNETZ_DONE/ || $0 ~ /^GRIMMNETZ_FAILED/) exit }}'"
     );
 
