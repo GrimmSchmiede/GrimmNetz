@@ -251,6 +251,7 @@ pub fn render_docker_systemd_unit(
     install_path: &str,
     unit_name: &str,
     image: &str,
+    container_mount: &str,
     docker_env: &std::collections::BTreeMap<String, String>,
     ram_limit_mb: u32,
     cpu_limit_percent: u32,
@@ -273,7 +274,7 @@ pub fn render_docker_systemd_unit(
          ExecStartPre=-/usr/bin/docker rm -f {unit_name}\n\
          ExecStart=/usr/bin/docker run --rm --name {unit_name} \
 --network host --memory={ram_limit_mb}m --cpus={cpus} \
--v {install_path}:/data -e PUID={gameserver_uid} -e PGID={gameserver_gid} \
+-v {install_path}:{container_mount} -e PUID={gameserver_uid} -e PGID={gameserver_gid} \
 {env_flags}{image}\n\
          ExecStop=/usr/bin/docker stop -t 30 {unit_name}\n\
          Restart=on-failure\n\
@@ -326,6 +327,7 @@ pub fn render_docker_install_script(
         install_path,
         unit_name,
         image,
+        &template.install.container_mount,
         &template.install.docker_env,
         template.default_ram_limit_mb,
         template.default_cpu_limit_percent,

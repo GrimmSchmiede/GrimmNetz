@@ -16,6 +16,10 @@ pub struct GameInstall {
     /// Umgebungsvariablen für `docker run -e KEY=VALUE ...`.
     #[serde(default)]
     pub docker_env: std::collections::BTreeMap<String, String>,
+    /// Pfad im Container, auf den das Instanzverzeichnis gemountet wird - Standard "/data"
+    /// (itzg/minecraft-server), manche Images erwarten einen anderen Pfad (z.B. factoriotools/factorio: "/factorio").
+    #[serde(default = "default_container_mount")]
+    pub container_mount: String,
     /// Shell-Schritte, die vor dem ersten Containerstart im Bind-Mount laufen (z. B. Factorios
     /// server-settings.json) - laufen wie die klassischen `steps` als `gameserver`-User.
     #[serde(default)]
@@ -114,6 +118,10 @@ pub struct GameTemplate {
 
 fn default_console_say_format() -> String {
     "say {message}".to_string()
+}
+
+fn default_container_mount() -> String {
+    "/data".to_string()
 }
 
 #[derive(Deserialize)]
