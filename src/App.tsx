@@ -16,7 +16,7 @@ import InstanceDetail from "./InstanceDetail";
 import grimmNetzLogo from "./assets/grimmnetz_logo.png";
 import GameIcon from "./GameIcon";
 import DistroIcon from "./DistroIcon";
-import type { GameTemplate, InstanceRecord, InstanceStatus, LocalSystemStats, ServerRecord, VersionInfo } from "./types";
+import type { ActiveInstall, GameTemplate, InstanceRecord, InstanceStatus, LocalSystemStats, ServerRecord, VersionInfo } from "./types";
 
 type HardwareStats = {
   cpu_percent: number;
@@ -87,6 +87,7 @@ function App() {
   const [discovering, setDiscovering] = useState(false);
   const [discoverError, setDiscoverError] = useState("");
   const [discoverResult, setDiscoverResult] = useState<number | null>(null);
+  const [pendingInstalls, setPendingInstalls] = useState<ActiveInstall[]>([]);
 
   async function discoverInstances() {
     if (!selectedServerId) return;
@@ -232,6 +233,23 @@ function App() {
       setInstances(list);
     } catch {
       setInstances([]);
+    }
+    // Self-heal without requiring the user to know "Vorhandene Server suchen" exists: an
+    // install that finished while the app was closed/disconnected already has a real game
+    // systemd unit on the server, so a silent discover_instances call picks it up automatically
+    // the moment the server is opened again - no manual button, no "looks broken, reinstall?"
+    // moment for a user who doesn't know what a crashed SSH session even means.
+    try {
+      const found = await invoke<InstanceRecord[]>("discover_instances", { serverId });
+      if (found.length > 0) setInstances((prev) => [...prev, ...found]);
+    } catch {
+      // best-effort - the manual "Vorhandene Server suchen" button still covers this on failure
+    }
+    try {
+      const pending = await invoke<ActiveInstall[]>("list_active_installs", { serverId });
+      setPendingInstalls(pending);
+    } catch {
+      setPendingInstalls([]);
     }
   }
 
@@ -589,6 +607,22 @@ function App() {
                 </button>
               </div>
             </div>
+            )}
+            {!openInstanceId && pendingInstalls.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12 }}>
+                {pendingInstalls.map((p) => (
+                  <div
+                    key={p.instance_id}
+                    className="nx-fact-card"
+                    style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
+                  >
+                    <span>Installation läuft im Hintergrund weiter: {p.instance_id.slice(0, 8)}...</span>
+                    <button className="nx-btn nx-btn-primary" onClick={() => setShowStoreDialog(true)}>
+                      Fortschritt anzeigen
+                    </button>
+                  </div>
+                ))}
+              </div>
             )}
             {!openInstanceId && discoverError && <p style={{ color: "var(--nx-danger)", fontSize: 12 }}>{discoverError}</p>}
             {!openInstanceId && discoverResult !== null && (
