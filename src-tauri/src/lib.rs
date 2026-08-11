@@ -482,6 +482,75 @@ async fn start_install(state: State<'_, AppState>, server_id: String, game_id: S
     Ok(instance_id)
 }
 
+/// Tails the running (or already-finished) install's log from the start and turns each line
+/// back into the same InstallEvent stream the old live-streaming install_game produced -
+/// reconnect-safe because re-reading the whole (short) log file from byte 0 is cheap and just
+/// re-derives the same UI state, whether this is the first attach or a reconnect after a drop.
+#[tauri::command]
+async fn attach_install_stream(
+    state: State<'_, AppState>,
+    server_id: String,
+    instance_id: String,
+    game_id: String,
+    display_name: String,
+    on_event: Channel<InstallEvent>,
+) -> Result<InstanceRecord, String> {
+    let template = games::find_template(&game_id).ok_or_else(|| format!("Unbekanntes Spiel: {game_id}"))?;
+    let install_path = format!("/home/gameserver/instances/{instance_id}");
+    let unit_name = format!("grimmnetz-{instance_id}");
+
+    let mut guard = acquire_session(&state, &server_id).await?;
+    let session = guard.as_mut().unwrap();
+
+    // awk exits (closing its stdin pipe) the moment it sees the DONE/FAILED marker, which sends
+    // tail -f a SIGPIPE and ends the whole pipeline - that's what makes exec_stream_lines return
+    // instead of blocking forever the way a bare `tail -f` would.
+    let tail_cmd = format!(
+        "tail -f -n +1 {install_path}/install.log 2>/dev/null | \
+         awk '{{ print; fflush(); if ($0 ~ /^GRIMMNETZ_DONE/ || $0 ~ /^GRIMMNETZ_FAILED/) exit }}'"
+    );
+
+    let mut failure: Option<String> = None;
+    let mut total_steps = template.install.steps.len();
+    session
+        .exec_stream_lines(&tail_cmd, |line| {
+            if let Some(rest) = line.strip_prefix("GRIMMNETZ_STEP ") {
+                if rest == "unit" {
+                    let _ = on_event.send(InstallEvent::Step { label: "Dienst wird eingerichtet".to_string() });
+                } else if let Some((n, total)) = rest.split_once('/') {
+                    total_steps = total.parse().unwrap_or(total_steps);
+                    let _ = on_event.send(InstallEvent::Step { label: format!("Schritt {n}/{total}") });
+                }
+            } else if let Some(msg) = line.strip_prefix("GRIMMNETZ_FAILED:") {
+                failure = Some(msg.to_string());
+            } else if let Some((percent, phase)) = parse_steamcmd_progress(&line) {
+                let _ = on_event.send(InstallEvent::Progress { percent, phase });
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if let Some(msg) = failure {
+        return Err(msg);
+    }
+
+    let _ = total_steps; // only used to enrich the label above, no further use once done
+
+    let record = InstanceRecord {
+        id: instance_id,
+        server_id,
+        game_id,
+        display_name,
+        install_path,
+        systemd_unit: unit_name,
+        cpu_limit_percent: template.default_cpu_limit_percent,
+        ram_limit_mb: template.default_ram_limit_mb,
+    };
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.insert_instance(&record).map_err(|e| e.to_string())?;
+    Ok(record)
+}
+
 /// Module B: installs a game server from its template — runs the install steps over SSH,
 /// generates + enables a systemd unit (running as `gameserver`, never root), and persists
 /// the instance so it shows up as a tile in the UI.
@@ -2158,6 +2227,7 @@ pub fn run() {
             list_instances,
             install_game,
             start_install,
+            attach_install_stream,
             discover_instances,
             get_instance_version,
             get_minecraft_live_status,
