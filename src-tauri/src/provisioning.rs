@@ -399,6 +399,13 @@ pub fn render_install_script(
     script.push_str(&format!(
         "fail() {{ echo \"GRIMMNETZ_FAILED:$1\"; sudo rm -rf {install_path}; exit 1; }}\n"
     ));
+    // Handing the directory to `gameserver` (so the per-step `sudo -u gameserver` commands below
+    // can write downloaded game files into it) happens HERE, inside the root-run script itself -
+    // not as a separate step from the app beforehand. Doing it any earlier would leave a window
+    // where the directory is already gameserver-writable but this script hasn't run yet, letting
+    // a process already running as `gameserver` (every game instance shares that one account)
+    // race-replace install.sh itself before it's executed as root.
+    script.push_str(&format!("chown gameserver:gameserver {install_path}\n"));
 
     for (idx, step) in template.install.steps.iter().enumerate() {
         let rendered = games::render_step(step, instance_id, template.default_ram_limit_mb);

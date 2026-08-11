@@ -446,12 +446,12 @@ async fn start_install(state: State<'_, AppState>, server_id: String, game_id: S
     let unit_name = format!("grimmnetz-{instance_id}");
     let install_unit_name = format!("grimmnetz-install-{instance_id}");
 
-    // Directory starts root-owned (default for `mkdir` run as root) - install.sh gets written
-    // and locked down to root-only (0700) BEFORE the directory is ever handed to `gameserver`,
-    // so a process already running as `gameserver` (e.g. a compromised sibling game server -
-    // every instance shares that one unprivileged account) can never race-replace the script
-    // that's about to run as root. `chown` without `-R` only affects the directory entry itself,
-    // not files already inside it, so install.sh/.grimmnetz-game-id stay root-owned afterwards.
+    // Directory starts root-owned (default for `mkdir` run as root) and STAYS root-owned until
+    // the script itself hands it to `gameserver` (see render_install_script) - handing it over
+    // here instead would leave a window where a process already running as `gameserver` (every
+    // game instance shares that one unprivileged account) could race-replace install.sh before
+    // it's ever executed as root. Directory ownership, not file permissions, is what actually
+    // controls who can unlink/replace a file, so this has to be a directory-level guarantee.
     session.exec(&format!("sudo mkdir -p {install_path}")).await.map_err(|e| e.to_string())?;
 
     // Recorded so list_active_installs can report which game an in-progress/orphaned install
@@ -471,14 +471,6 @@ async fn start_install(state: State<'_, AppState>, server_id: String, game_id: S
         .exec(&format!(
             "echo '{escaped_script}' | sudo tee {install_path}/install.sh > /dev/null && sudo chmod 700 {install_path}/install.sh"
         ))
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // Now safe to hand the directory itself to gameserver - install.sh (root:root, 0700) is
-    // already immutable to that account, and this is what lets the per-step `sudo -u gameserver`
-    // commands inside the script actually write downloaded game files into this directory.
-    session
-        .exec(&format!("sudo chown gameserver:gameserver {install_path}"))
         .await
         .map_err(|e| e.to_string())?;
 
