@@ -484,7 +484,15 @@ async fn start_install(state: State<'_, AppState>, server_id: String, game_id: S
         .await
         .map_err(|e| e.to_string())?;
 
-    let script = provisioning::render_install_script(&instance_id, &install_path, &unit_name, &template);
+    let script = if template.install.install_type == "docker" {
+        let uid_out = session.exec("id -u gameserver").await.map_err(|e| e.to_string())?;
+        let gid_out = session.exec("id -g gameserver").await.map_err(|e| e.to_string())?;
+        let gameserver_uid: u32 = uid_out.trim().parse().map_err(|_| "Konnte gameserver-UID nicht ermitteln".to_string())?;
+        let gameserver_gid: u32 = gid_out.trim().parse().map_err(|_| "Konnte gameserver-GID nicht ermitteln".to_string())?;
+        provisioning::render_docker_install_script(&instance_id, &install_path, &unit_name, &template, gameserver_uid, gameserver_gid)
+    } else {
+        provisioning::render_install_script(&instance_id, &install_path, &unit_name, &template)
+    };
     let escaped_script = script.replace('\'', "'\\''");
     session
         .exec(&format!(
