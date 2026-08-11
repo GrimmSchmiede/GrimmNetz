@@ -89,3 +89,9 @@ export type InstanceRecord = {
   cpu_limit_percent: number;
   ram_limit_mb: number;
 };
+
+export type ActiveInstall = {
+  instance_id: string;
+  game_id: string;
+  running: boolean;
+};

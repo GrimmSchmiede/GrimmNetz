@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
-import type { GameTemplate, InstallEvent, InstanceRecord } from "./types";
+import type { GameTemplate, InstallEvent, InstanceRecord, ActiveInstall } from "./types";
 import GameIcon from "./GameIcon";
 
 type Props = {
@@ -20,12 +20,19 @@ export default function GameStoreDialog({ serverId, onClose, onInstalled, onInst
   const [search, setSearch] = useState("");
   const [steamBuilds, setSteamBuilds] = useState<Record<number, string>>({});
   const [otherVersions, setOtherVersions] = useState<Record<string, string>>({});
+  const [activeInstalls, setActiveInstalls] = useState<ActiveInstall[]>([]);
 
   useEffect(() => {
     invoke<GameTemplate[]>("list_games")
       .then(setGames)
       .catch((err) => setError(String(err)));
   }, []);
+
+  useEffect(() => {
+    invoke<ActiveInstall[]>("list_active_installs", { serverId })
+      .then(setActiveInstalls)
+      .catch(() => setActiveInstalls([]));
+  }, [serverId]);
 
   // Live build number straight from Steam's public depot info, instead of a version string we'd
   // have to keep updated by hand (and which would silently go stale the moment Steam ships an
@@ -179,6 +186,29 @@ export default function GameStoreDialog({ serverId, onClose, onInstalled, onInst
       {error && <div className="nx-update-error">{error}</div>}
       {filteredGames.length === 0 && !error && (
         <p style={{ color: "var(--nx-text-muted)", textAlign: "center" }}>Kein Spiel gefunden.</p>
+      )}
+
+      {activeInstalls.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          {activeInstalls.map((install) => (
+            <div key={install.instance_id} className="nx-fact-card" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <span>Läuft: Installation {install.instance_id.slice(0, 8)}...</span>
+              <button
+                className="nx-btn nx-btn-primary"
+                onClick={() => {
+                  setInstallingId(install.instance_id);
+                  onInstallStart({ id: install.game_id, name: install.instance_id } as GameTemplate);
+                  attachAndWait(install.instance_id, install.game_id, install.instance_id).finally(() => {
+                    setInstallingId(null);
+                    onInstallDone();
+                  });
+                }}
+              >
+                Anzeigen
+              </button>
+            </div>
+          ))}
+        </div>
       )}
 
       <div className="nx-store-scroll">
