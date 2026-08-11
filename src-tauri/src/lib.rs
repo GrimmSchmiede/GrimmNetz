@@ -511,11 +511,7 @@ async fn list_active_installs(state: State<'_, AppState>, server_id: String) -> 
             .collect()
     };
 
-    let mut guard = acquire_session(&state, &server_id).await?;
-    let session = guard.as_mut().unwrap();
-    let output = session
-        .exec(
-            "for d in /home/gameserver/instances/*/; do \
+    const SCAN_CMD: &str = "for d in /home/gameserver/instances/*/; do \
                id=$(basename \"$d\"); \
                log=\"$d/install.log\"; \
                [ -f \"$log\" ] || continue; \
@@ -528,10 +524,24 @@ async fn list_active_installs(state: State<'_, AppState>, server_id: String) -> 
                  active=$(systemctl is-active \"$unit\" 2>/dev/null); \
                  { [ \"$active\" = \"active\" ] || [ \"$active\" = \"activating\" ]; } && echo \"RUNNING $id\"; \
                fi; \
-             done",
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+             done";
+
+    let mut guard = acquire_session(&state, &server_id).await?;
+    let session = guard.as_mut().unwrap();
+    // A pooled session left dead by an earlier dropped connection (e.g. a timed-out
+    // start_install) would otherwise fail this call silently forever - drop the stale slot and
+    // retry once on a brand-new connection, same self-healing pattern used elsewhere for exactly
+    // this scenario.
+    let output = match session.exec(SCAN_CMD).await {
+        Ok(out) => out,
+        Err(_) => {
+            *guard = None;
+            let mut fresh = connect_fresh(&state, &server_id).await?;
+            let out = fresh.exec(SCAN_CMD).await.map_err(|e| e.to_string())?;
+            *guard = Some(fresh);
+            out
+        }
+    };
 
     Ok(output
         .lines()
