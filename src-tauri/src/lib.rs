@@ -603,8 +603,16 @@ async fn attach_install_stream(
     let mut failure: Option<String> = None;
     let mut done = false;
     let mut total_steps = template.install.steps.len();
-    session
-        .exec_stream_lines(&tail_cmd, |line| {
+    // exec_stream_lines has no timeout of its own (unlike exec/exec_long) - it just waits on the
+    // channel forever, which is normally fine for a `tail -f` that's expected to run for minutes.
+    // But a long-lived pooled SSH session that's been through many prior reconnects can end up
+    // with a channel that neither produces data nor ever closes - the call then hangs forever,
+    // which looked from the outside like the reconnect loop getting stuck (it wasn't retrying,
+    // this single attempt just never returned). A generous timeout plus dropping the pooled slot
+    // on any failure forces the next retry onto a guaranteed-fresh connection.
+    let stream_result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        session.exec_stream_lines(&tail_cmd, |line| {
             if let Some(rest) = line.strip_prefix("GRIMMNETZ_STEP ") {
                 if rest == "unit" {
                     let _ = on_event.send(InstallEvent::Step { label: "Dienst wird eingerichtet".to_string() });
@@ -619,9 +627,21 @@ async fn attach_install_stream(
             } else if let Some((percent, phase)) = parse_steamcmd_progress(&line) {
                 let _ = on_event.send(InstallEvent::Progress { percent, phase });
             }
-        })
-        .await
-        .map_err(|e| e.to_string())?;
+        }),
+    )
+    .await;
+
+    match stream_result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            *guard = None;
+            return Err(e.to_string());
+        }
+        Err(_) => {
+            *guard = None;
+            return Err("Verbindung zum Install-Log hängt fest - erneut versuchen.".to_string());
+        }
+    }
 
     if let Some(msg) = failure {
         return Err(msg);
