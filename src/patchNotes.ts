@@ -8,6 +8,15 @@ export type PatchNote = {
 // newest first. Not every internal commit needs its own entry.
 export const PATCH_NOTES: PatchNote[] = [
   {
+    version: "0.1.43",
+    date: "2026-08-11",
+    items: [
+      "Spiele-Installationen laufen jetzt server-seitig als eigenständiger Dienst statt über die offene App-Verbindung - App-Absturz oder Verbindungsabbruch während eines Downloads zerstört den Install nicht mehr",
+      "Laufende oder gerade fertig gewordene Installationen werden beim Öffnen eines Servers automatisch erkannt und angezeigt, kein manuelles Suchen mehr nötig",
+      "Diverse Verbindungsstabilitäts-Fixes rund um Reattach/Fortschrittsanzeige nach längerem Live-Testing",
+    ],
+  },
+  {
     version: "0.1.42",
     date: "2026-08-11",
     items: [
