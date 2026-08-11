@@ -230,6 +230,49 @@ pub fn render_systemd_unit(
     )
 }
 
+/// Docker-Variante von `render_systemd_unit` - Container statt rohem Binary/Java-Prozess.
+/// Host-Networking (keine Port-Mapping-Konfiguration nötig, Firewall-Logik bleibt identisch),
+/// Bind-Mount nach `/data` (Config-Editor/SFTP funktionieren unveraendert, da Dateien direkt im
+/// bestehenden Instanzordner liegen), Ressourcenlimits ueber `docker run --memory/--cpus` statt
+/// systemd-Cgroups, da Docker-Container standardmaessig NICHT unter dem Cgroup der systemd-Unit
+/// laufen - `MemoryMax=`/`CPUQuota=` in der Unit selbst wuerden hier ins Leere greifen.
+pub fn render_docker_systemd_unit(
+    instance_id: &str,
+    install_path: &str,
+    unit_name: &str,
+    image: &str,
+    docker_env: &std::collections::BTreeMap<String, String>,
+    ram_limit_mb: u32,
+    cpu_limit_percent: u32,
+    gameserver_uid: u32,
+    gameserver_gid: u32,
+) -> String {
+    let cpus = cpu_limit_percent as f64 / 100.0;
+    let env_flags: String = docker_env
+        .iter()
+        .map(|(k, v)| format!("-e {}={} ", k, games::shell_single_quote(v)))
+        .collect();
+    format!(
+        "[Unit]\n\
+         Description=GrimmNetz Gameserver Instance {instance_id}\n\
+         After=network.target docker.service\n\
+         Requires=docker.service\n\n\
+         [Service]\n\
+         Type=simple\n\
+         WorkingDirectory={install_path}\n\
+         ExecStartPre=-/usr/bin/docker rm -f {unit_name}\n\
+         ExecStart=/usr/bin/docker run --rm --name {unit_name} \
+--network host --memory={ram_limit_mb}m --cpus={cpus} \
+-v {install_path}:/data -e PUID={gameserver_uid} -e PGID={gameserver_gid} \
+{env_flags}{image}\n\
+         ExecStop=/usr/bin/docker stop -t 30 {unit_name}\n\
+         Restart=on-failure\n\
+         RestartSec=5\n\n\
+         [Install]\n\
+         WantedBy=multi-user.target\n"
+    )
+}
+
 pub async fn install_systemd_unit(ssh: &mut SshSession, unit_name: &str, unit_contents: &str) -> Result<()> {
     let escaped = unit_contents.replace('\'', "'\\''");
     ssh.exec(&format!(
