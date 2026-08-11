@@ -195,13 +195,19 @@ export default function GameStoreDialog({ serverId, onClose, onInstalled, onInst
               <span>Läuft: Installation {install.instance_id.slice(0, 8)}...</span>
               <button
                 className="nx-btn nx-btn-primary"
-                onClick={() => {
+                disabled={installingId !== null}
+                onClick={async () => {
                   setInstallingId(install.instance_id);
+                  setError("");
                   onInstallStart({ id: install.game_id, name: install.instance_id } as GameTemplate);
-                  attachAndWait(install.instance_id, install.game_id, install.instance_id).finally(() => {
+                  try {
+                    await attachAndWait(install.instance_id, install.game_id, install.instance_id);
+                  } catch (err) {
+                    setError(String(err));
+                  } finally {
                     setInstallingId(null);
                     onInstallDone();
-                  });
+                  }
                 }}
               >
                 Anzeigen
