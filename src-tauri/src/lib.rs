@@ -494,12 +494,23 @@ pub struct ActiveInstall {
     pub running: bool,
 }
 
-/// Server-side discovery of in-progress or just-finished installs, independent of the local
-/// DB - this is what lets a second PC (or the same PC after being closed for days) see and
-/// reattach to an install it never started itself. `game_id` is read back out of the rendered
+/// Server-side discovery of in-progress OR already-finished-but-never-claimed installs,
+/// independent of the local DB - this is what lets a second PC (or the same PC after being
+/// closed for days, or one that lost its SSH connection before `attach_install_stream` ever
+/// returned) see and reattach to an install it never started itself, whether it's still running
+/// or quietly finished while nobody was watching. `game_id` is read back out of the rendered
 /// install.sh (the game_id isn't otherwise recorded anywhere before GRIMMNETZ_DONE lands).
 #[tauri::command]
 async fn list_active_installs(state: State<'_, AppState>, server_id: String) -> Result<Vec<ActiveInstall>, String> {
+    let known_ids: std::collections::HashSet<String> = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.list_instances(&server_id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|i| i.id)
+            .collect()
+    };
+
     let mut guard = acquire_session(&state, &server_id).await?;
     let session = guard.as_mut().unwrap();
     let output = session
@@ -508,11 +519,15 @@ async fn list_active_installs(state: State<'_, AppState>, server_id: String) -> 
                id=$(basename \"$d\"); \
                log=\"$d/install.log\"; \
                [ -f \"$log\" ] || continue; \
-               tail -c 4096 \"$log\" | grep -qE 'GRIMMNETZ_DONE|GRIMMNETZ_FAILED' && continue; \
-               unit=\"grimmnetz-install-$id\"; \
-               active=$(systemctl is-active \"$unit\" 2>/dev/null); \
-               [ \"$active\" = \"active\" ] || continue; \
-               echo \"$id\"; \
+               tail_out=$(tail -c 4096 \"$log\"); \
+               echo \"$tail_out\" | grep -q GRIMMNETZ_FAILED && continue; \
+               if echo \"$tail_out\" | grep -q GRIMMNETZ_DONE; then \
+                 echo \"DONE $id\"; \
+               else \
+                 unit=\"grimmnetz-install-$id\"; \
+                 active=$(systemctl is-active \"$unit\" 2>/dev/null); \
+                 { [ \"$active\" = \"active\" ] || [ \"$active\" = \"activating\" ]; } && echo \"RUNNING $id\"; \
+               fi; \
              done",
         )
         .await
@@ -520,8 +535,13 @@ async fn list_active_installs(state: State<'_, AppState>, server_id: String) -> 
 
     Ok(output
         .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|id| ActiveInstall { instance_id: id.trim().to_string(), game_id: String::new(), running: true })
+        .filter_map(|line| {
+            let (status, id) = line.trim().split_once(' ')?;
+            if known_ids.contains(id) {
+                return None; // already in the local DB - not an orphan, nothing to reattach
+            }
+            Some(ActiveInstall { instance_id: id.to_string(), game_id: String::new(), running: status == "RUNNING" })
+        })
         .collect())
 }
 
