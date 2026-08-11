@@ -223,6 +223,31 @@ impl Db {
         rows.collect()
     }
 
+    /// Looks up a single instance by its primary key. Used by `attach_install_stream` to detect
+    /// an already-completed install on reconnect, where re-tailing install.log from byte 0 would
+    /// otherwise re-match the DONE marker and attempt a duplicate `insert_instance`.
+    pub fn get_instance(&self, id: &str) -> rusqlite::Result<Option<InstanceRecord>> {
+        self.conn
+            .query_row(
+                "SELECT id, server_id, game_id, display_name, install_path, systemd_unit, cpu_limit_percent, ram_limit_mb
+                 FROM instances WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok(InstanceRecord {
+                        id: row.get(0)?,
+                        server_id: row.get(1)?,
+                        game_id: row.get(2)?,
+                        display_name: row.get(3)?,
+                        install_path: row.get(4)?,
+                        systemd_unit: row.get(5)?,
+                        cpu_limit_percent: row.get(6)?,
+                        ram_limit_mb: row.get(7)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
     pub fn find_instance_by_unit(&self, server_id: &str, systemd_unit: &str) -> rusqlite::Result<Option<InstanceRecord>> {
         self.conn
             .query_row(

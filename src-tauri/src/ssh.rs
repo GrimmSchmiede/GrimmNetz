@@ -231,7 +231,21 @@ impl SshSession {
     /// Runs a (potentially long-lived / follow-mode) command, invoking `on_line` for every
     /// complete line as data arrives, so the caller can forward it live (e.g. to the UI)
     /// instead of waiting for the whole process to finish.
-    pub async fn exec_stream_lines<F>(&mut self, command: &str, mut on_line: F) -> Result<()>
+    pub async fn exec_stream_lines<F>(&mut self, command: &str, on_line: F) -> Result<()>
+    where
+        F: FnMut(String) + Send,
+    {
+        self.exec_stream_lines_idle(command, None, on_line).await
+    }
+
+    /// Same as `exec_stream_lines`, but errors out if no data arrives for longer than
+    /// `idle_timeout` - deliberately an IDLE timeout (reset on every message), not a cap on the
+    /// call's total duration. A flat total-duration timeout would fire on every long-running
+    /// stream regardless of whether it's actually stuck, forcing a reconnect every N seconds even
+    /// while data keeps flowing fine - exactly the bug this replaced (a 30s total timeout around
+    /// a multi-minute install tail was forcing a fresh reconnect roughly every 30s, the whole
+    /// install through, misreported to the user as repeated "connection lost" drops).
+    pub async fn exec_stream_lines_idle<F>(&mut self, command: &str, idle_timeout: Option<Duration>, mut on_line: F) -> Result<()>
     where
         F: FnMut(String) + Send,
     {
@@ -239,7 +253,15 @@ impl SshSession {
         channel.exec(true, command).await?;
 
         let mut buffer = Vec::new();
-        while let Some(msg) = channel.wait().await {
+        loop {
+            let msg = match idle_timeout {
+                Some(d) => match tokio::time::timeout(d, channel.wait()).await {
+                    Ok(msg) => msg,
+                    Err(_) => return Err(anyhow!("Zeitüberschreitung: keine Daten mehr empfangen (Verbindung tot?)")),
+                },
+                None => channel.wait().await,
+            };
+            let Some(msg) = msg else { break };
             match msg {
                 ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
                     buffer.extend_from_slice(&data);

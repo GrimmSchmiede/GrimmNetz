@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import "./App.css";
 import UpdateBanner from "./UpdateBanner";
@@ -16,7 +16,7 @@ import InstanceDetail from "./InstanceDetail";
 import grimmNetzLogo from "./assets/grimmnetz_logo.png";
 import GameIcon from "./GameIcon";
 import DistroIcon from "./DistroIcon";
-import type { GameTemplate, InstanceRecord, InstanceStatus, LocalSystemStats, ServerRecord, VersionInfo } from "./types";
+import type { ActiveInstall, GameTemplate, InstallEvent, InstanceRecord, InstanceStatus, LocalSystemStats, ServerRecord, VersionInfo } from "./types";
 
 type HardwareStats = {
   cpu_percent: number;
@@ -87,6 +87,8 @@ function App() {
   const [discovering, setDiscovering] = useState(false);
   const [discoverError, setDiscoverError] = useState("");
   const [discoverResult, setDiscoverResult] = useState<number | null>(null);
+  const [pendingInstalls, setPendingInstalls] = useState<ActiveInstall[]>([]);
+  const [pendingInstallError, setPendingInstallError] = useState("");
 
   async function discoverInstances() {
     if (!selectedServerId) return;
@@ -226,12 +228,85 @@ function App() {
     }
   }
 
+  // Reattaches directly from the "still installing" banner - no detour through opening the
+  // App-Store first. Same reconnect-tolerant loop as the App-Store's own install flow: a dropped
+  // tail is not a failure since the install itself runs entirely server-side regardless of this
+  // connection's state, only a real GRIMMNETZ_FAILED (never matching "Verbindung"/"Host-Key")
+  // should stop the retry and surface as an actual error.
+  async function attachPendingInstall(pending: ActiveInstall) {
+    if (!selectedServerId) return;
+    // list_active_installs only knows game_id, not a human display name - look the real name up
+    // from the game templates instead of falling back to the raw instance UUID as the server's
+    // name (which is what happened before this: a perfectly good reattach, just cosmetically ugly).
+    let displayName = pending.instance_id;
+    try {
+      const templates = await invoke<GameTemplate[]>("list_games");
+      const template = templates.find((t) => t.id === pending.game_id);
+      if (template) displayName = template.name;
+    } catch {
+      // best-effort - falls back to the instance id, still functionally correct
+    }
+    setInstallingGame({ id: pending.game_id, name: displayName } as GameTemplate);
+    setInstallProgress("");
+    setPendingInstallError("");
+    try {
+      for (;;) {
+        try {
+          const onEvent = new Channel<InstallEvent>();
+          onEvent.onmessage = (event) => {
+            if (event.event === "step") setInstallProgress(event.label);
+            else setInstallProgress(`${event.phase}: ${event.percent.toFixed(0)}%`);
+          };
+          const instance = await invoke<InstanceRecord>("attach_install_stream", {
+            serverId: selectedServerId,
+            instanceId: pending.instance_id,
+            gameId: pending.game_id,
+            displayName,
+            onEvent,
+          });
+          setInstances((prev) => [...prev, instance]);
+          setPendingInstalls((prev) => prev.filter((p) => p.instance_id !== pending.instance_id));
+          return;
+        } catch (err) {
+          const message = String(err);
+          const isSecurityWarning = message.includes("Host-Key");
+          const looksLikeDrop = !isSecurityWarning && (message.includes("Zeitüberschreitung") || message.includes("Verbindung"));
+          if (!looksLikeDrop) throw err;
+          setInstallProgress("Verbindung unterbrochen, verbinde erneut...");
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
+      }
+    } catch (err) {
+      setPendingInstallError(String(err));
+    } finally {
+      setInstallingGame(null);
+      setInstallProgress("");
+    }
+  }
+
   async function loadInstances(serverId: string) {
     try {
       const list = await invoke<InstanceRecord[]>("list_instances", { serverId });
       setInstances(list);
     } catch {
       setInstances([]);
+    }
+    // Self-heal without requiring the user to know "Vorhandene Server suchen" exists: an
+    // install that finished while the app was closed/disconnected already has a real game
+    // systemd unit on the server, so a silent discover_instances call picks it up automatically
+    // the moment the server is opened again - no manual button, no "looks broken, reinstall?"
+    // moment for a user who doesn't know what a crashed SSH session even means.
+    try {
+      const found = await invoke<InstanceRecord[]>("discover_instances", { serverId });
+      if (found.length > 0) setInstances((prev) => [...prev, ...found]);
+    } catch {
+      // best-effort - the manual "Vorhandene Server suchen" button still covers this on failure
+    }
+    try {
+      const pending = await invoke<ActiveInstall[]>("list_active_installs", { serverId });
+      setPendingInstalls(pending);
+    } catch {
+      setPendingInstalls([]);
     }
   }
 
@@ -590,6 +665,27 @@ function App() {
               </div>
             </div>
             )}
+            {!openInstanceId && pendingInstalls.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12 }}>
+                {pendingInstalls.map((p) => (
+                  <div
+                    key={p.instance_id}
+                    className="nx-fact-card"
+                    style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
+                  >
+                    <span>Installation läuft im Hintergrund weiter: {p.instance_id.slice(0, 8)}...</span>
+                    <button
+                      className="nx-btn nx-btn-primary"
+                      disabled={installingGame !== null}
+                      onClick={() => attachPendingInstall(p)}
+                    >
+                      Fortschritt anzeigen
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {!openInstanceId && pendingInstallError && <p style={{ color: "var(--nx-danger)", fontSize: 12 }}>{pendingInstallError}</p>}
             {!openInstanceId && discoverError && <p style={{ color: "var(--nx-danger)", fontSize: 12 }}>{discoverError}</p>}
             {!openInstanceId && discoverResult !== null && (
               <p style={{ color: "var(--nx-success)", fontSize: 12 }}>

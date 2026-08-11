@@ -431,114 +431,256 @@ fn list_instances(state: State<'_, AppState>, server_id: String) -> Result<Vec<I
     db.list_instances(&server_id).map_err(|e| e.to_string())
 }
 
-/// Module B: installs a game server from its template — runs the install steps over SSH,
-/// generates + enables a systemd unit (running as `gameserver`, never root), and persists
-/// the instance so it shows up as a tile in the UI.
+/// Kicks off a game install as a detached, server-side systemd-oneshot unit and returns
+/// immediately - the install itself survives the app closing or the connection dropping.
+/// Progress is observed separately via `attach_install_stream`.
 #[tauri::command]
-async fn install_game(
-    state: State<'_, AppState>,
-    server_id: String,
-    game_id: String,
-    display_name: String,
-    on_event: Channel<InstallEvent>,
-) -> Result<InstanceRecord, String> {
+async fn start_install(state: State<'_, AppState>, server_id: String, game_id: String) -> Result<String, String> {
     let template = games::find_template(&game_id).ok_or_else(|| format!("Unbekanntes Spiel: {game_id}"))?;
 
     let mut guard = acquire_session(&state, &server_id).await?;
     let session = guard.as_mut().unwrap();
 
     let instance_id = uuid::Uuid::new_v4().to_string();
-    let ram_limit_mb = template.default_ram_limit_mb;
     let install_path = format!("/home/gameserver/instances/{instance_id}");
+    let unit_name = format!("grimmnetz-{instance_id}");
+    let install_unit_name = format!("grimmnetz-install-{instance_id}");
 
-    // /home/gameserver is owned by root (created via `useradd -m`), so the admin's own
-    // login user can't write into it. Create the instance dir with the right owner first,
-    // then run every install step as the `gameserver` user itself so downloaded files end
-    // up owned by the account that will actually run the service.
+    // Directory starts root-owned (default for `mkdir` run as root) and STAYS root-owned until
+    // the script itself hands it to `gameserver` (see render_install_script) - handing it over
+    // here instead would leave a window where a process already running as `gameserver` (every
+    // game instance shares that one unprivileged account) could race-replace install.sh before
+    // it's ever executed as root. Directory ownership, not file permissions, is what actually
+    // controls who can unlink/replace a file, so this has to be a directory-level guarantee.
+    session.exec(&format!("sudo mkdir -p {install_path}")).await.map_err(|e| e.to_string())?;
+
+    // Recorded so list_active_installs can report which game an in-progress/orphaned install
+    // belongs to - nothing else persists game_id anywhere before GRIMMNETZ_DONE writes the
+    // actual game record, and a reattaching app/second PC needs it to find the right template.
     session
         .exec(&format!(
-            "sudo mkdir -p {install_path} && sudo chown gameserver:gameserver {install_path}"
+            "echo {} | sudo tee {install_path}/.grimmnetz-game-id > /dev/null",
+            games::shell_single_quote(&game_id)
         ))
         .await
         .map_err(|e| e.to_string())?;
 
-    let total_steps = template.install.steps.len();
-    let mut step_result: Result<(), String> = Ok(());
-    for (idx, step) in template.install.steps.iter().enumerate() {
-        let _ = on_event.send(InstallEvent::Step {
-            label: format!("Schritt {}/{total_steps}", idx + 1),
-        });
-        let rendered = games::render_step(step, &instance_id, ram_limit_mb);
-        let quoted = games::shell_single_quote(&rendered);
-        let command = format!("sudo -u gameserver bash -c {quoted}");
-
-        let outcome = if template.install.install_type == "steamcmd" {
-            // steamcmd redraws its own progress line - stream it so the frontend can show a
-            // real percentage instead of a bare spinner for what's usually the slowest step.
-            session
-                .exec_stream_lines(&command, |line| {
-                    if let Some((percent, phase)) = parse_steamcmd_progress(&line) {
-                        let _ = on_event.send(InstallEvent::Progress { percent, phase });
-                    }
-                })
-                .await
-                .map_err(|e| e.to_string())
-        } else {
-            session.exec_long(&command).await.map_err(|e| e.to_string()).map(|_| ())
-        };
-
-        if let Err(e) = outcome {
-            step_result = Err(e);
-            break;
-        }
-    }
-
-    if let Err(e) = step_result {
-        // Don't leave a half-downloaded install lying around on failure (dead connection,
-        // timeout, disk full, ...) - every failed attempt otherwise silently eats disk space
-        // forever since nothing else ever points at or cleans up this instance_id again.
-        // The step failure itself is often exactly a dropped connection, so the cleanup call
-        // on that same session would silently no-op too - if it fails, drop the pooled slot
-        // and retry cleanup on a brand-new connection before giving up.
-        if session.exec(&format!("sudo rm -rf {install_path}")).await.is_err() {
-            *guard = None;
-            if let Ok(mut fresh) = connect_fresh(&state, &server_id).await {
-                let _ = fresh.exec(&format!("sudo rm -rf {install_path}")).await;
-            }
-        }
-        return Err(e);
-    }
-
-    let start_command = games::render_step(&template.start_command, &instance_id, ram_limit_mb);
-    let unit_name = format!("grimmnetz-{instance_id}");
-    let unit_contents = provisioning::render_systemd_unit(
-        &instance_id,
-        &install_path,
-        &start_command,
-        ram_limit_mb,
+    // discover_instances reads this manifest to recover full instance metadata for anything it
+    // finds that the local DB doesn't know about yet - without it, discovery falls back to a
+    // binary-signature guess that only works for templates it happens to have a check for, and
+    // never recovers the real display name (falls back to the instance UUID) or resource limits.
+    let manifest = format!(
+        "{{\"game_id\":\"{}\",\"display_name\":\"{}\",\"cpu_limit_percent\":{},\"ram_limit_mb\":{}}}",
+        game_id.replace('"', ""),
+        template.name.replace('"', ""),
         template.default_cpu_limit_percent,
+        template.default_ram_limit_mb
+    );
+    session
+        .exec(&format!(
+            "echo {} | sudo tee {install_path}/.grimmnetz-instance.json > /dev/null",
+            games::shell_single_quote(&manifest)
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let script = provisioning::render_install_script(&instance_id, &install_path, &unit_name, &template);
+    let escaped_script = script.replace('\'', "'\\''");
+    session
+        .exec(&format!(
+            "echo '{escaped_script}' | sudo tee {install_path}/install.sh > /dev/null && sudo chmod 700 {install_path}/install.sh"
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // The install unit's own stdout/stderr (captured by systemd/journald AND redirected into
+    // install.log) is what attach_install_stream tails - RemainAfterExit keeps `systemctl
+    // is-active` truthful about "still running" for list_active_installs after the script exits.
+    // Runs as root (no User= override): the script needs `sudo`-free root access to write the
+    // game's systemd unit and manage the firewall, and drops to `gameserver` itself per-step via
+    // `sudo -u gameserver` for the actual install commands (render_install_script, Task 1) -
+    // gameserver has no sudo rights of its own, so running the whole unit as that user instead
+    // makes every privileged step in the script fail.
+    let install_unit_contents = format!(
+        "[Unit]\nDescription=GrimmNetz Install {instance_id}\n\n\
+         [Service]\nType=oneshot\nRemainAfterExit=yes\nWorkingDirectory={install_path}\n\
+         ExecStart=/bin/bash -c '/bin/bash {install_path}/install.sh > {install_path}/install.log 2>&1'\n\n\
+         [Install]\nWantedBy=multi-user.target\n"
+    );
+    provisioning::install_systemd_unit(session, &install_unit_name, &install_unit_contents)
+        .await
+        .map_err(|e| e.to_string())?;
+    // `--no-block`: without it, `systemctl start` on a Type=oneshot unit waits for ExecStart to
+    // finish before returning - i.e. for the ENTIRE install to complete - which blows straight
+    // through the SSH exec timeout (20s) on any real install. `--no-block` just queues the start
+    // job and returns immediately, which is exactly what "kick off and observe separately" needs.
+    session
+        .exec(&format!("sudo systemctl start --no-block {install_unit_name}"))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(instance_id)
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ActiveInstall {
+    pub instance_id: String,
+    pub game_id: String,
+    pub running: bool,
+}
+
+/// Server-side discovery of installs that are STILL running, independent of the local DB - this
+/// is what lets a second PC (or the same PC after being closed) watch an in-progress install it
+/// never started itself. An install that has already finished doesn't need this: its game unit
+/// (`grimmnetz-<id>`, written by the script itself before GRIMMNETZ_DONE) is already a normal,
+/// fully-formed instance on the server - the existing "Vorhandene Server suchen"
+/// (`discover_instances`) already finds and imports those, same as any other server-side
+/// instance the local DB doesn't know about yet.
+#[tauri::command]
+async fn list_active_installs(state: State<'_, AppState>, server_id: String) -> Result<Vec<ActiveInstall>, String> {
+    let known_ids: std::collections::HashSet<String> = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.list_instances(&server_id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|i| i.id)
+            .collect()
+    };
+
+    // `/home/gameserver` is 0750 (gameserver:gameserver) - the SSH login user can't even list
+    // it, let alone `install.sh`'s 0700, so this whole scan (including the glob expansion
+    // itself, which happens in THIS shell, not a nested one) has to run as root via `sudo bash -c`.
+    const SCAN_CMD: &str = "sudo bash -c 'for d in /home/gameserver/instances/*/; do \
+               id=$(basename \"$d\"); \
+               log=\"$d/install.log\"; \
+               [ -f \"$log\" ] || continue; \
+               tail -c 4096 \"$log\" | grep -qE \"GRIMMNETZ_DONE|GRIMMNETZ_FAILED\" && continue; \
+               unit=\"grimmnetz-install-$id\"; \
+               active=$(systemctl is-active \"$unit\" 2>/dev/null); \
+               { [ \"$active\" = \"active\" ] || [ \"$active\" = \"activating\" ]; } || continue; \
+               gid=$(cat \"$d/.grimmnetz-game-id\" 2>/dev/null); \
+               echo \"$id|$gid\"; \
+             done'";
+
+    let mut guard = acquire_session(&state, &server_id).await?;
+    let session = guard.as_mut().unwrap();
+    // A pooled session left dead by an earlier dropped connection (e.g. a timed-out
+    // start_install) would otherwise fail this call silently forever - drop the stale slot and
+    // retry once on a brand-new connection, same self-healing pattern used elsewhere for exactly
+    // this scenario.
+    let output = match session.exec(SCAN_CMD).await {
+        Ok(out) => out,
+        Err(_) => {
+            *guard = None;
+            let mut fresh = connect_fresh(&state, &server_id).await?;
+            let out = fresh.exec(SCAN_CMD).await.map_err(|e| e.to_string())?;
+            *guard = Some(fresh);
+            out
+        }
+    };
+
+    Ok(output
+        .lines()
+        .filter_map(|line| {
+            let (id, gid) = line.trim().split_once('|')?;
+            if id.is_empty() || known_ids.contains(id) {
+                return None;
+            }
+            Some(ActiveInstall { instance_id: id.to_string(), game_id: gid.to_string(), running: true })
+        })
+        .collect())
+}
+
+/// Tails the running (or already-finished) install's log from the start and turns each line
+/// back into the same InstallEvent stream the old live-streaming install_game produced -
+/// reconnect-safe because re-reading the whole (short) log file from byte 0 is cheap and just
+/// re-derives the same UI state, whether this is the first attach or a reconnect after a drop.
+#[tauri::command]
+async fn attach_install_stream(
+    state: State<'_, AppState>,
+    server_id: String,
+    instance_id: String,
+    game_id: String,
+    display_name: String,
+    on_event: Channel<InstallEvent>,
+) -> Result<InstanceRecord, String> {
+    let template = games::find_template(&game_id).ok_or_else(|| format!("Unbekanntes Spiel: {game_id}"))?;
+    let install_path = format!("/home/gameserver/instances/{instance_id}");
+    let unit_name = format!("grimmnetz-{instance_id}");
+
+    let mut guard = acquire_session(&state, &server_id).await?;
+    let session = guard.as_mut().unwrap();
+
+    // awk exits (closing its stdin pipe) the moment it sees the DONE/FAILED marker, which sends
+    // tail -f a SIGPIPE and ends the whole pipeline - that's what makes exec_stream_lines return
+    // instead of blocking forever the way a bare `tail -f` would.
+    // Both `sudo` (same reason as list_active_installs: /home/gameserver is 0750, the SSH login
+    // user can't traverse into it at all) and `--retry` (install.log doesn't exist yet for the
+    // brief moment between `systemctl start --no-block` returning and the unit's ExecStart
+    // actually opening its redirect - without --retry, tail fails instantly on the missing file,
+    // which this function used to misreport as "connection lost" on every single fresh install).
+    let tail_cmd = format!(
+        "sudo tail -f --retry -n +1 {install_path}/install.log 2>/dev/null | \
+         awk '{{ print; fflush(); if ($0 ~ /^GRIMMNETZ_DONE/ || $0 ~ /^GRIMMNETZ_FAILED/) exit }}'"
     );
 
-    provisioning::install_systemd_unit(session, &unit_name, &unit_contents)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // Start the instance right after install so the user doesn't have to know
-    // that "enable" (survive reboot) and "start" (running now) are different things.
-    provisioning::control_instance(session, &unit_name, "start")
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // Open the game's port(s) in whatever firewall is active, so the user never has to know
-    // firewalls exist. Best-effort: a single port failing to open shouldn't fail the whole
-    // install (server is already up - worst case the user needs to open it manually).
-    if !template.ports.is_empty() {
-        if let Ok(family) = provisioning::detect_distro_family(session).await {
-            for p in &template.ports {
-                let _ = provisioning::open_port(session, family, p.port, &p.protocol).await;
+    let mut failure: Option<String> = None;
+    let mut done = false;
+    let mut total_steps = template.install.steps.len();
+    // Idle timeout, NOT a cap on the total call duration - a flat total-duration timeout would
+    // fire on every install that takes longer than the timeout regardless of whether data is
+    // still flowing fine, forcing a reconnect on a fixed cycle the whole way through (that was a
+    // real bug here: a 30s total timeout around a multi-minute tail forced a fresh reconnect
+    // roughly every 30s for the entire install, misreported to the user as repeated drops).
+    // Dropping the pooled slot on any failure forces the next retry onto a guaranteed-fresh
+    // connection instead of potentially reusing a genuinely stuck one.
+    let stream_result = session
+        .exec_stream_lines_idle(&tail_cmd, Some(std::time::Duration::from_secs(60)), |line| {
+            if let Some(rest) = line.strip_prefix("GRIMMNETZ_STEP ") {
+                if rest == "unit" {
+                    let _ = on_event.send(InstallEvent::Step { label: "Dienst wird eingerichtet".to_string() });
+                } else if let Some((n, total)) = rest.split_once('/') {
+                    total_steps = total.parse().unwrap_or(total_steps);
+                    let _ = on_event.send(InstallEvent::Step { label: format!("Schritt {n}/{total}") });
+                }
+            } else if line.starts_with("GRIMMNETZ_DONE") {
+                done = true;
+            } else if let Some(msg) = line.strip_prefix("GRIMMNETZ_FAILED:") {
+                failure = Some(msg.to_string());
+            } else if let Some((percent, phase)) = parse_steamcmd_progress(&line) {
+                let _ = on_event.send(InstallEvent::Progress { percent, phase });
             }
-        }
+        })
+        .await;
+
+    if let Err(e) = stream_result {
+        *guard = None;
+        return Err(e.to_string());
     }
+
+    if let Some(msg) = failure {
+        return Err(msg);
+    }
+    // The tail pipeline can end without either marker - either a genuine transient drop (retry
+    // is right), or the GRIMMNETZ_FAILED line got written right as fail() also deleted the
+    // instance directory out from under the tail, losing the race to report it. Telling those
+    // apart matters: the ambiguous message below contains "Verbindung", which the frontend's
+    // retry filter treats as retryable - a real failure worded that way would retry forever and
+    // never show the user anything. Checking whether the directory still exists distinguishes
+    // them cheaply: gone means fail() really did run, even though its message was missed.
+    if !done {
+        let dir_gone = session
+            .exec(&format!("test -d {install_path} || echo GRIMMNETZ_DIR_GONE"))
+            .await
+            .map(|out| out.contains("GRIMMNETZ_DIR_GONE"))
+            .unwrap_or(false);
+        if dir_gone {
+            return Err("Installation fehlgeschlagen (Fehlermeldung nicht mehr verfügbar, Instanzordner wurde bereits aufgeräumt).".to_string());
+        }
+        return Err("Verbindung zum Install-Log verloren, bevor die Installation abgeschlossen war - erneut versuchen.".to_string());
+    }
+
+    let _ = total_steps; // only used to enrich the label above, no further use once done
 
     let record = InstanceRecord {
         id: instance_id,
@@ -548,29 +690,16 @@ async fn install_game(
         install_path,
         systemd_unit: unit_name,
         cpu_limit_percent: template.default_cpu_limit_percent,
-        ram_limit_mb,
+        ram_limit_mb: template.default_ram_limit_mb,
     };
-
-    // Write a small manifest alongside the game files themselves, so this instance can be
-    // rediscovered (via `discover_instances`) even if the local database is ever lost -
-    // ports/systemd/the game itself all live entirely on the server; only this metadata
-    // (which game, display name, limits) previously existed nowhere but our local SQLite DB.
-    let manifest = serde_json::json!({
-        "instance_id": record.id,
-        "game_id": record.game_id,
-        "display_name": record.display_name,
-        "cpu_limit_percent": record.cpu_limit_percent,
-        "ram_limit_mb": record.ram_limit_mb,
-    });
-    let manifest_path = format!("{}/.grimmnetz-instance.json", record.install_path);
-    let _ = session
-        .exec_with_stdin(
-            &format!("sudo -u gameserver tee {} > /dev/null", games::shell_single_quote(&manifest_path)),
-            manifest.to_string().as_bytes(),
-        )
-        .await;
-
     let db = state.db.lock().map_err(|e| e.to_string())?;
+    // Reconnect-safe: attach_install_stream may be called again for an already-completed
+    // install (log gets re-tailed from byte 0, so DONE matches again). Only insert once -
+    // a second unconditional insert_instance would hit the instances.id PRIMARY KEY and
+    // fail with a UNIQUE constraint error on every attach after the first successful one.
+    if let Some(existing) = db.get_instance(&record.id).map_err(|e| e.to_string())? {
+        return Ok(existing);
+    }
     db.insert_instance(&record).map_err(|e| e.to_string())?;
     Ok(record)
 }
@@ -623,10 +752,11 @@ async fn discover_instances(state: State<'_, AppState>, server_id: String) -> Re
 
     for line in unit_list.lines() {
         let unit_name = line.trim().trim_end_matches(".service").to_string();
-        // Scheduled-restart trigger services (e.g. "grimmnetz-restart-<unit>-<id>") must never
+        // Scheduled-restart trigger services (e.g. "grimmnetz-restart-<unit>-<id>") and the
+        // install-tracking units (e.g. "grimmnetz-install-<id>", see start_install) must never
         // be mistaken for a game instance, or discovery would insert a bogus non-existent one.
         let instance_id = match unit_name.strip_prefix("grimmnetz-") {
-            Some(id) if !id.is_empty() && !id.starts_with("restart-") => id.to_string(),
+            Some(id) if !id.is_empty() && !id.starts_with("restart-") && !id.starts_with("install-") => id.to_string(),
             _ => continue,
         };
         if known.contains(&instance_id) {
@@ -2105,7 +2235,9 @@ pub fn run() {
             get_hardware_stats,
             list_games,
             list_instances,
-            install_game,
+            start_install,
+            list_active_installs,
+            attach_install_stream,
             discover_instances,
             get_instance_version,
             get_minecraft_live_status,
