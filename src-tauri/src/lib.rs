@@ -528,17 +528,20 @@ async fn list_active_installs(state: State<'_, AppState>, server_id: String) -> 
             .collect()
     };
 
-    const SCAN_CMD: &str = "for d in /home/gameserver/instances/*/; do \
+    // `/home/gameserver` is 0750 (gameserver:gameserver) - the SSH login user can't even list
+    // it, let alone `install.sh`'s 0700, so this whole scan (including the glob expansion
+    // itself, which happens in THIS shell, not a nested one) has to run as root via `sudo bash -c`.
+    const SCAN_CMD: &str = "sudo bash -c 'for d in /home/gameserver/instances/*/; do \
                id=$(basename \"$d\"); \
                log=\"$d/install.log\"; \
                [ -f \"$log\" ] || continue; \
-               tail -c 4096 \"$log\" | grep -qE 'GRIMMNETZ_DONE|GRIMMNETZ_FAILED' && continue; \
+               tail -c 4096 \"$log\" | grep -qE \"GRIMMNETZ_DONE|GRIMMNETZ_FAILED\" && continue; \
                unit=\"grimmnetz-install-$id\"; \
                active=$(systemctl is-active \"$unit\" 2>/dev/null); \
                { [ \"$active\" = \"active\" ] || [ \"$active\" = \"activating\" ]; } || continue; \
                gid=$(cat \"$d/.grimmnetz-game-id\" 2>/dev/null); \
                echo \"$id|$gid\"; \
-             done";
+             done'";
 
     let mut guard = acquire_session(&state, &server_id).await?;
     let session = guard.as_mut().unwrap();
