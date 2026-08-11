@@ -5,16 +5,19 @@
       "name": "Minecraft",
       "subtitle": "Paper (aktuellste Version)",
       "icon": "minecraft.png",
-      "requires": ["java21"],
-      "tested_on": ["Ubuntu 24.04"],
+      "requires": [],
+      "tested_on": [],
       "install": {
-        "type": "direct-download",
-        "steps": [
-          "cd /home/gameserver/instances/{instance_id} && VERSION=$(curl -s https://fill.papermc.io/v3/projects/paper | jq -r '.versions | to_entries[0].value[0]') && URL=$(curl -s https://fill.papermc.io/v3/projects/paper/versions/$VERSION/builds | jq -r '.[0].downloads[\"server:default\"].url') && curl -o paper.jar \"$URL\"",
-          "cd /home/gameserver/instances/{instance_id} && echo 'eula=true' > eula.txt"
-        ]
+        "type": "docker",
+        "image": "itzg/minecraft-server:latest",
+        "docker_env": {
+          "EULA": "TRUE",
+          "TYPE": "PAPER",
+          "MEMORY": "4096M"
+        },
+        "pre_start_steps": []
       },
-      "start_command": "java -Xmx{ram_limit_mb}M -Xms{xms_mb}M -jar paper.jar nogui",
+      "start_command": "",
       "default_cpu_limit_percent": 200,
       "default_ram_limit_mb": 4096,
       "config": {
@@ -187,20 +190,23 @@
       "icon": "factorio.png",
       "console_say_format": "{message}",
       "requires": [],
-      "tested_on": ["Ubuntu 24.04"],
+      "tested_on": [],
       "install": {
-        "type": "direct-download",
-        "steps": [
-          "cd /home/gameserver/instances/{instance_id} && curl -L -o factorio.tar.xz \"https://factorio.com/get-download/stable/headless/linux64\" && tar -xJf factorio.tar.xz --strip-components=1 && rm factorio.tar.xz",
-          "mkdir -p /home/gameserver/instances/{instance_id}/saves && cd /home/gameserver/instances/{instance_id} && ./bin/x64/factorio --create saves/server.zip",
-          "echo '{\"name\":\"GrimmNetz Factorio\",\"description\":\"\",\"tags\":[],\"max_players\":0,\"visibility\":{\"public\":false,\"lan\":true},\"username\":\"\",\"password\":\"\",\"token\":\"\",\"game_password\":\"\",\"require_user_verification\":true,\"max_upload_in_kilobytes_per_second\":0,\"max_upload_slots\":5,\"minimum_latency_in_ticks\":0,\"ignore_player_limit_for_returning_players\":false,\"allow_commands\":\"admins-only\",\"autosave_interval\":10,\"autosave_slots\":5,\"afk_autokick_interval\":0,\"auto_pause\":true,\"only_admins_can_pause_the_game\":true,\"autosave_only_on_server\":true}' > /home/gameserver/instances/{instance_id}/server-settings.json",
-          "openssl rand -hex 16 > /home/gameserver/instances/{instance_id}/rcon-password.txt && chmod 600 /home/gameserver/instances/{instance_id}/rcon-password.txt"
+        "type": "docker",
+        "image": "factoriotools/factorio:latest",
+        "docker_env": {
+          "RCON_PORT": "27015"
+        },
+        "pre_start_steps": [
+          "mkdir -p /home/gameserver/instances/{instance_id}/config",
+          "echo '{\"name\":\"GrimmNetz Factorio\",\"description\":\"\",\"tags\":[],\"max_players\":0,\"visibility\":{\"public\":false,\"lan\":true},\"username\":\"\",\"password\":\"\",\"token\":\"\",\"game_password\":\"\",\"require_user_verification\":true,\"max_upload_in_kilobytes_per_second\":0,\"max_upload_slots\":5,\"minimum_latency_in_ticks\":0,\"ignore_player_limit_for_returning_players\":false,\"allow_commands\":\"admins-only\",\"autosave_interval\":10,\"autosave_slots\":5,\"afk_autokick_interval\":0,\"auto_pause\":true,\"only_admins_can_pause_the_game\":true,\"autosave_only_on_server\":true}' > /home/gameserver/instances/{instance_id}/config/server-settings.json",
+          "openssl rand -hex 16 > /home/gameserver/instances/{instance_id}/config/rconpw && chmod 600 /home/gameserver/instances/{instance_id}/config/rconpw"
         ]
       },
-      "start_command": "./bin/x64/factorio --start-server saves/server.zip --server-settings server-settings.json --rcon-bind 127.0.0.1:27015 --rcon-password \"$(cat rcon-password.txt)\"",
-      "rcon": { "port": 27015, "password_file": "rcon-password.txt", "broadcast_command": "{message}", "save_command": "server-save" },
+      "start_command": "",
+      "rcon": { "port": 27015, "password_file": "config/rconpw", "broadcast_command": "{message}", "save_command": "server-save" },
       "config": {
-        "file": "server-settings.json",
+        "file": "config/server-settings.json",
         "format": "json",
         "fields": [
           { "key": "name", "label": "Server Name", "type": "text", "default": "GrimmNetz Factorio" },
