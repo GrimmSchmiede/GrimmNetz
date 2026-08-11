@@ -1087,9 +1087,150 @@ fn console_fifo_path(unit_name: &str) -> Option<String> {
 
 /// A single best-effort console write: `timeout` guards against ever hanging forever if the
 /// FIFO has no reader (game not actually running) - `echo > fifo` blocks indefinitely otherwise.
-fn console_say_command(fifo: &str, message: &str) -> String {
-    let echo_cmd = format!("echo {} > {fifo}", games::shell_single_quote(&format!("say {message}")));
+fn console_say_command(fifo: &str, say_format: &str, message: &str) -> String {
+    let line = say_format.replace("{message}", message);
+    let echo_cmd = format!("echo {} > {fifo}", games::shell_single_quote(&line));
     format!("timeout 2 sudo -u gameserver bash -c {} 2>/dev/null", games::shell_single_quote(&echo_cmd))
+}
+
+/// Minimal Source-RCON client, run server-side via `python3 -c` over the existing SSH session -
+/// avoids needing a Rust TCP client from the desktop app (which would require opening the RCON
+/// port to the internet) and avoids shipping a compiled RCON binary. Connects to 127.0.0.1 only,
+/// matching `--rcon-bind 127.0.0.1:<port>` in the game's start command.
+const RCON_PY: &str = r#"
+import socket,struct,sys
+def pkt(i,t,b):
+    body=b.encode()+b'\x00\x00'
+    data=struct.pack('<ii',i,t)+body
+    return struct.pack('<i',len(data))+data
+port=int(sys.argv[1])
+pw=open(sys.argv[2]).read().strip()
+cmd=sys.argv[3]
+s=socket.create_connection(('127.0.0.1',port),5)
+s.sendall(pkt(1,3,pw))
+auth=s.recv(4096)
+if len(auth)<8 or struct.unpack('<i',auth[4:8])[0]==-1:
+    sys.exit(1)
+s.sendall(pkt(2,2,cmd))
+s.recv(4096)
+"#;
+
+fn rcon_command(port: u16, password_file: &str, command: &str) -> String {
+    // The password file is owned by `gameserver` with mode 600 - the SSH login user is neither
+    // root nor `gameserver`, so reading it needs the same `sudo -u gameserver` wrapper the FIFO
+    // path already uses, otherwise `open()` fails with Permission denied (swallowed by 2>/dev/null).
+    let py_cmd = format!(
+        "python3 -c {} {port} {} {}",
+        games::shell_single_quote(RCON_PY),
+        games::shell_single_quote(password_file),
+        games::shell_single_quote(command)
+    );
+    format!("timeout 5 sudo -u gameserver bash -c {} 2>/dev/null", games::shell_single_quote(&py_cmd))
+}
+
+/// Builds the ready-to-exec shell command that announces `message` inside the running game
+/// identified by `unit_name` - RCON for games that declare an `RconSpec` (Factorio: stdin isn't
+/// reliably read), the stdin FIFO otherwise. Falls back to the generic FIFO `say` form if the
+/// instance/template can't be found (e.g. was deleted between listing and use).
+fn build_broadcast_command(db: &db::Db, server_id: &str, unit_name: &str, message: &str) -> String {
+    let instance = db.find_instance_by_unit(server_id, unit_name).ok().flatten();
+    let template = instance.as_ref().and_then(|inst| games::find_template(&inst.game_id));
+
+    if let (Some(inst), Some(tpl)) = (&instance, &template) {
+        if let Some(rcon) = &tpl.rcon {
+            let password_path = format!("{}/{}", inst.install_path, rcon.password_file);
+            let command = rcon.broadcast_command.replace("{message}", message);
+            return rcon_command(rcon.port, &password_path, &command);
+        }
+    }
+    let fifo = console_fifo_path(unit_name).unwrap_or_default();
+    let say_format = template.map(|tpl| tpl.console_say_format).unwrap_or_else(|| "say {message}".to_string());
+    console_say_command(&fifo, &say_format, message)
+}
+
+/// If the game declares a `save_command`, builds the RCON command that forces an immediate save -
+/// run right before restart/stop so the countdown doesn't depend on the regular autosave timing.
+fn build_save_command(db: &db::Db, server_id: &str, unit_name: &str) -> Option<String> {
+    let inst = db.find_instance_by_unit(server_id, unit_name).ok().flatten()?;
+    let tpl = games::find_template(&inst.game_id)?;
+    let rcon = tpl.rcon?;
+    let save = rcon.save_command?;
+    let password_path = format!("{}/{}", inst.install_path, rcon.password_file);
+    Some(rcon_command(rcon.port, &password_path, &save))
+}
+
+fn format_duration(seconds: u32) -> String {
+    if seconds < 60 {
+        format!("{seconds} Sek")
+    } else if seconds % 60 == 0 {
+        format!("{} Min", seconds / 60)
+    } else {
+        format!("{} Min {} Sek", seconds / 60, seconds % 60)
+    }
+}
+
+/// The fixed countdown announcement marks, in seconds-before-the-action and their display label -
+/// same schedule for every game so behaviour doesn't quietly differ per template. Coarse marks
+/// down to 1 minute, then a 30s mark, then every single second for the final 10.
+fn countdown_marks() -> Vec<(u32, String)> {
+    let mut marks: Vec<(u32, String)> = vec![
+        (900, "15 Min".to_string()),
+        (600, "10 Min".to_string()),
+        (300, "5 Min".to_string()),
+        (240, "4 Min".to_string()),
+        (180, "3 Min".to_string()),
+        (120, "2 Min".to_string()),
+        (60, "1 Min".to_string()),
+        (30, "30 Sek".to_string()),
+    ];
+    for s in (1..=10).rev() {
+        marks.push((s, format!("{s} Sek")));
+    }
+    marks
+}
+
+/// Builds the full shell script for an announced restart/stop: optional immediate custom message,
+/// then every countdown mark that fits inside `total_seconds`, then an optional forced save, then
+/// the actual `systemctl` action. Shared by the "Neustart mit Ansage" button and the daily
+/// scheduled-restart timer so both get the same countdown behaviour.
+fn build_countdown_script(
+    db: &db::Db,
+    server_id: &str,
+    unit_name: &str,
+    action: &str,
+    custom_message: Option<&str>,
+    total_seconds: u32,
+) -> String {
+    let mut parts = Vec::new();
+    let action_word = if action == "restart" { "Neustart" } else { "Stop" };
+    if let Some(msg) = custom_message {
+        parts.push(build_broadcast_command(db, server_id, unit_name, msg));
+        // Same line-count as a paragraph break in chat, without embedding a raw newline into the
+        // FIFO/RCON payload - each broadcast call is already its own line in the game's chat.
+        parts.push(build_broadcast_command(db, server_id, unit_name, &format!("Server {action_word} in {}", format_duration(total_seconds))));
+    }
+    let mut prev = total_seconds;
+    for (mark_secs, label) in countdown_marks() {
+        let within = if custom_message.is_some() { mark_secs < total_seconds } else { mark_secs <= total_seconds };
+        if !within {
+            continue;
+        }
+        let wait = prev.saturating_sub(mark_secs);
+        if wait > 0 {
+            parts.push(format!("sleep {wait}"));
+        }
+        parts.push(build_broadcast_command(db, server_id, unit_name, &format!("Server {action_word} in {label}")));
+        prev = mark_secs;
+    }
+    if prev > 0 {
+        parts.push(format!("sleep {prev}"));
+    }
+    if let Some(save_cmd) = build_save_command(db, server_id, unit_name) {
+        parts.push(save_cmd);
+        parts.push("sleep 2".to_string());
+    }
+    parts.push(format!("sudo systemctl {action} {unit_name}"));
+    parts.join(" ; ")
 }
 
 fn timer_name(unit_name: &str, id: &str) -> Result<String, String> {
@@ -1159,23 +1300,21 @@ async fn add_scheduled_restart(
 
     let id = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
     let full_name = format!("grimmnetz-{}", timer_name(&unit_name, &id)?);
-    let fifo = console_fifo_path(&unit_name).ok_or_else(|| "Ungültiger Bezeichner".to_string())?;
 
     // Fires 15 min before the time the user picked, counts down with in-game announcements,
     // and only restarts once it lands exactly on the requested time - not the other way around
     // (restart at HH:MM, warnings trailing off beforehand would mean the countdown text lies
     // about how much time is actually left).
-    let countdown = [(15, 300), (10, 300), (5, 60), (4, 60), (3, 60), (2, 60), (1, 60)]
-        .iter()
-        .map(|(mark, sleep_after)| format!("{} ; sleep {sleep_after}", console_say_command(&fifo, &format!("Server Neustart in {mark} Min"))))
-        .collect::<Vec<_>>()
-        .join(" ; ");
+    let countdown = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        build_countdown_script(&db, &server_id, &unit_name, "restart", None, 15 * 60)
+    };
     let (warn_hh, warn_mm) = shift_time(hh, mm, -15);
 
     let service_contents = format!(
         "[Unit]\nDescription=Geplanter Neustart fuer {unit_name}\n\n\
          [Service]\nType=oneshot\nExecStart=/bin/bash -c '{}'\n",
-        format!("{countdown} ; sudo systemctl restart {unit_name}").replace('\'', "'\\''")
+        countdown.replace('\'', "'\\''")
     );
     let timer_contents = format!(
         "[Unit]\nDescription=Timer fuer geplanten Neustart von {unit_name}\n\n\
@@ -1214,12 +1353,11 @@ async fn broadcast_and_execute(
     if action != "restart" && action != "stop" {
         return Err("Ungültige Aktion".to_string());
     }
-    let fifo = console_fifo_path(&unit_name).ok_or_else(|| "Ungültiger Bezeichner".to_string())?;
     let delay_seconds = delay_minutes.min(180) * 60;
-    let script = format!(
-        "{} ; sleep {delay_seconds} ; sudo systemctl {action} {unit_name}",
-        console_say_command(&fifo, &message)
-    );
+    let script = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        build_countdown_script(&db, &server_id, &unit_name, &action, Some(&message), delay_seconds)
+    };
 
     let mut session = connect_fresh(&state, &server_id).await?;
     tauri::async_runtime::spawn(async move {

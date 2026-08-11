@@ -54,6 +54,21 @@ pub struct ConfigSchema {
     pub fields: Vec<ConfigField>,
 }
 
+/// Some games (Factorio) don't reliably read a plain stdin pipe for console input - they need
+/// RCON instead. When present, broadcast messages go over RCON rather than the stdin FIFO.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct RconSpec {
+    pub port: u16,
+    /// Path to the file holding the RCON password, relative to the instance's install directory.
+    pub password_file: String,
+    /// RCON command to broadcast a message, `{message}` is substituted.
+    pub broadcast_command: String,
+    /// RCON command that forces an immediate save, run right before the restart/stop action so
+    /// the countdown doesn't rely on the game's regular autosave interval catching the moment.
+    #[serde(default)]
+    pub save_command: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct GameTemplate {
     pub id: String,
@@ -75,6 +90,19 @@ pub struct GameTemplate {
     /// Shown in the App-Store as a trust signal, never used to block installation.
     #[serde(default)]
     pub tested_on: Vec<String>,
+    /// How to write a broadcast message into this game's stdin console. `{message}` is
+    /// substituted. Most games understand a `say`-prefixed console command; Factorio's headless
+    /// console instead broadcasts any plain-text line as-is, so `say ...` there just prints the
+    /// literal word "say" into chat instead of announcing anything.
+    #[serde(default = "default_console_say_format")]
+    pub console_say_format: String,
+    /// When set, broadcast messages use RCON instead of the stdin FIFO (see `RconSpec`).
+    #[serde(default)]
+    pub rcon: Option<RconSpec>,
+}
+
+fn default_console_say_format() -> String {
+    "say {message}".to_string()
 }
 
 #[derive(Deserialize)]

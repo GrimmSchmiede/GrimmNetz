@@ -87,7 +87,7 @@ Der GrimmNetz App-Store unterstützt die 1-Klick-Installation für:
 | 🧟 **7 Days to Die** | ✅ | Ubuntu 24.04 |
 | 🌴 **Palworld** | — | — |
 | 🐺 **DayZ** | — | — |
-| ⚙️ **Factorio** | — | — |
+| ⚙️ **Factorio** | ✅ | Ubuntu 24.04 |
 | 🏭 **Satisfactory** | — | — |
 | 🪓 **Valheim** | — | — |
 | 🧛 **V Rising** | — | — |

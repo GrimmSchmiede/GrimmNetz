@@ -8,6 +8,15 @@ export type PatchNote = {
 // newest first. Not every internal commit needs its own entry.
 export const PATCH_NOTES: PatchNote[] = [
   {
+    version: "0.1.42",
+    date: "2026-08-11",
+    items: [
+      "Factorio als getestet markiert: Install, Config (Name/Slots/Passwort), Neustart und LAN-Verbindung end-to-end verifiziert",
+      "Bugfix: Server-Nachricht bei geplantem/manuellem Neustart kam bei Factorio nicht an - Factorio liest kein stdin zuverlässig, Ansagen laufen dort jetzt über RCON",
+      "Neustart-Countdown erweitert: automatische Zwischenansagen (15/10/5/4/3/2/1 Min, 30 Sek, letzte 10 Sekunden einzeln) bei jedem Neustart/Stop mit Ansage, unabhängig vom Spiel; erzwungenes Speichern direkt vor dem Neustart bei Spielen mit RCON-Unterstützung",
+    ],
+  },
+  {
     version: "0.1.41",
     date: "2026-08-11",
     items: [

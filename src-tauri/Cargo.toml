@@ -1,6 +1,6 @@
 [package]
 name = "grimmnetz"
-version = "0.1.41"
+version = "0.1.42"
 description = "GrimmNetz - ServerManager für Gamer"
 authors = ["GrimmSchmiede"]
 license = "GPL-3.0"

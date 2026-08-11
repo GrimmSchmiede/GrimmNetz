@@ -185,17 +185,20 @@
       "name": "Factorio",
       "subtitle": "Headless Server",
       "icon": "factorio.png",
+      "console_say_format": "{message}",
       "requires": [],
-      "tested_on": [],
+      "tested_on": ["Ubuntu 24.04"],
       "install": {
         "type": "direct-download",
         "steps": [
           "cd /home/gameserver/instances/{instance_id} && curl -L -o factorio.tar.xz \"https://factorio.com/get-download/stable/headless/linux64\" && tar -xJf factorio.tar.xz --strip-components=1 && rm factorio.tar.xz",
           "mkdir -p /home/gameserver/instances/{instance_id}/saves && cd /home/gameserver/instances/{instance_id} && ./bin/x64/factorio --create saves/server.zip",
-          "echo '{\"name\":\"GrimmNetz Factorio\",\"description\":\"\",\"tags\":[],\"max_players\":0,\"visibility\":{\"public\":false,\"lan\":true},\"username\":\"\",\"password\":\"\",\"token\":\"\",\"game_password\":\"\",\"require_user_verification\":true,\"max_upload_in_kilobytes_per_second\":0,\"max_upload_slots\":5,\"minimum_latency_in_ticks\":0,\"ignore_player_limit_for_returning_players\":false,\"allow_commands\":\"admins-only\",\"autosave_interval\":10,\"autosave_slots\":5,\"afk_autokick_interval\":0,\"auto_pause\":true,\"only_admins_can_pause_the_game\":true,\"autosave_only_on_server\":true}' > /home/gameserver/instances/{instance_id}/server-settings.json"
+          "echo '{\"name\":\"GrimmNetz Factorio\",\"description\":\"\",\"tags\":[],\"max_players\":0,\"visibility\":{\"public\":false,\"lan\":true},\"username\":\"\",\"password\":\"\",\"token\":\"\",\"game_password\":\"\",\"require_user_verification\":true,\"max_upload_in_kilobytes_per_second\":0,\"max_upload_slots\":5,\"minimum_latency_in_ticks\":0,\"ignore_player_limit_for_returning_players\":false,\"allow_commands\":\"admins-only\",\"autosave_interval\":10,\"autosave_slots\":5,\"afk_autokick_interval\":0,\"auto_pause\":true,\"only_admins_can_pause_the_game\":true,\"autosave_only_on_server\":true}' > /home/gameserver/instances/{instance_id}/server-settings.json",
+          "openssl rand -hex 16 > /home/gameserver/instances/{instance_id}/rcon-password.txt && chmod 600 /home/gameserver/instances/{instance_id}/rcon-password.txt"
         ]
       },
-      "start_command": "./bin/x64/factorio --start-server saves/server.zip --server-settings server-settings.json",
+      "start_command": "./bin/x64/factorio --start-server saves/server.zip --server-settings server-settings.json --rcon-bind 127.0.0.1:27015 --rcon-password \"$(cat rcon-password.txt)\"",
+      "rcon": { "port": 27015, "password_file": "rcon-password.txt", "broadcast_command": "{message}", "save_command": "server-save" },
       "config": {
         "file": "server-settings.json",
         "format": "json",
