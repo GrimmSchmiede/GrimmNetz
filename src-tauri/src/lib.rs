@@ -465,9 +465,14 @@ async fn start_install(state: State<'_, AppState>, server_id: String, game_id: S
     // The install unit's own stdout/stderr (captured by systemd/journald AND redirected into
     // install.log) is what attach_install_stream tails - RemainAfterExit keeps `systemctl
     // is-active` truthful about "still running" for list_active_installs after the script exits.
+    // Runs as root (no User= override): the script needs `sudo`-free root access to write the
+    // game's systemd unit and manage the firewall, and drops to `gameserver` itself per-step via
+    // `sudo -u gameserver` for the actual install commands (render_install_script, Task 1) -
+    // gameserver has no sudo rights of its own, so running the whole unit as that user instead
+    // makes every privileged step in the script fail.
     let install_unit_contents = format!(
         "[Unit]\nDescription=GrimmNetz Install {instance_id}\n\n\
-         [Service]\nType=oneshot\nRemainAfterExit=yes\nUser=gameserver\nWorkingDirectory={install_path}\n\
+         [Service]\nType=oneshot\nRemainAfterExit=yes\nWorkingDirectory={install_path}\n\
          ExecStart=/bin/bash -c '/bin/bash {install_path}/install.sh > {install_path}/install.log 2>&1'\n\n\
          [Install]\nWantedBy=multi-user.target\n"
     );
