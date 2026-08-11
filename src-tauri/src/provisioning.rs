@@ -1,3 +1,4 @@
+use crate::games;
 use crate::ssh::SshSession;
 use anyhow::{anyhow, Result};
 
@@ -376,4 +377,70 @@ pub async fn open_port(ssh: &mut SshSession, family: DistroFamily, port: u16, pr
 pub async fn control_instance(ssh: &mut SshSession, unit_name: &str, action: &str) -> Result<String> {
     // action: "start" | "stop" | "restart"
     ssh.exec(&format!("sudo systemctl {action} {unit_name}")).await
+}
+
+/// Builds the full install script that runs entirely server-side as a systemd oneshot unit -
+/// every install step, the game's own systemd unit (write + enable + start), and best-effort
+/// firewall port opening. Writes `GRIMMNETZ_STEP`/`GRIMMNETZ_DONE`/`GRIMMNETZ_FAILED:<msg>`
+/// marker lines to stdout (captured into `install.log` via the systemd unit) so the app can
+/// tail the file from any machine and reconstruct progress, independent of its own SSH session.
+pub fn render_install_script(
+    instance_id: &str,
+    install_path: &str,
+    unit_name: &str,
+    template: &games::GameTemplate,
+) -> String {
+    let total = template.install.steps.len();
+    let mut script = String::new();
+    script.push_str("#!/bin/bash\n");
+    script.push_str(&format!("cd {install_path} || exit 1\n"));
+    // fail() centralises the same cleanup-on-failure behaviour install_game already has today -
+    // remove the half-finished instance dir so failed attempts never silently eat disk space.
+    script.push_str(&format!(
+        "fail() {{ echo \"GRIMMNETZ_FAILED:$1\"; sudo rm -rf {install_path}; exit 1; }}\n"
+    ));
+
+    for (idx, step) in template.install.steps.iter().enumerate() {
+        let rendered = games::render_step(step, instance_id, template.default_ram_limit_mb);
+        let quoted = games::shell_single_quote(&rendered);
+        script.push_str(&format!("echo \"GRIMMNETZ_STEP {}/{total}\"\n", idx + 1));
+        script.push_str(&format!(
+            "sudo -u gameserver bash -c {quoted} || fail \"Schritt {} fehlgeschlagen\"\n",
+            idx + 1
+        ));
+    }
+
+    // Game's own systemd unit - written and started here, not by the app after the fact, so
+    // the game is actually running even if the app never reattaches to see GRIMMNETZ_DONE.
+    let start_command = games::render_step(&template.start_command, instance_id, template.default_ram_limit_mb);
+    let unit_contents = render_systemd_unit(
+        instance_id,
+        install_path,
+        &start_command,
+        template.default_ram_limit_mb,
+        template.default_cpu_limit_percent,
+    );
+    let escaped_unit = unit_contents.replace('\'', "'\\''");
+    script.push_str("echo \"GRIMMNETZ_STEP unit\"\n");
+    script.push_str(&format!(
+        "echo '{escaped_unit}' | sudo tee /etc/systemd/system/{unit_name}.service > /dev/null || fail \"Systemd-Unit konnte nicht geschrieben werden\"\n"
+    ));
+    script.push_str("sudo systemctl daemon-reload || fail \"daemon-reload fehlgeschlagen\"\n");
+    script.push_str(&format!(
+        "sudo systemctl enable --now {unit_name} || fail \"Dienst konnte nicht gestartet werden\"\n"
+    ));
+
+    // Best-effort port opening - self-detects whichever firewall is active, mirrors the logic
+    // in `open_port()` but expressed as shell so it runs without any Rust round-trip. A single
+    // port failing to open must never fail the whole install (server is already up by now).
+    for p in &template.ports {
+        script.push_str(&format!(
+            "(sudo ufw status 2>/dev/null | grep -q 'Status: active' && sudo ufw allow {}/{}) || \
+             (systemctl is-active --quiet firewalld 2>/dev/null && sudo firewall-cmd --permanent --add-port={}/{} && sudo firewall-cmd --reload) || true\n",
+            p.port, p.protocol, p.port, p.protocol
+        ));
+    }
+
+    script.push_str("echo \"GRIMMNETZ_DONE\"\n");
+    script
 }
