@@ -322,13 +322,25 @@ pub fn render_docker_install_script(
         ));
     }
 
+    let rendered_env: std::collections::BTreeMap<String, String> = template
+        .install
+        .docker_env
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.clone(),
+                games::render_step(v, instance_id, template.default_ram_limit_mb),
+            )
+        })
+        .collect();
+
     let unit_contents = render_docker_systemd_unit(
         instance_id,
         install_path,
         unit_name,
         image,
         &template.install.container_mount,
-        &template.install.docker_env,
+        &rendered_env,
         template.default_ram_limit_mb,
         template.default_cpu_limit_percent,
         gameserver_uid,
