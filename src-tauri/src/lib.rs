@@ -465,6 +465,25 @@ async fn start_install(state: State<'_, AppState>, server_id: String, game_id: S
         .await
         .map_err(|e| e.to_string())?;
 
+    // discover_instances reads this manifest to recover full instance metadata for anything it
+    // finds that the local DB doesn't know about yet - without it, discovery falls back to a
+    // binary-signature guess that only works for templates it happens to have a check for, and
+    // never recovers the real display name (falls back to the instance UUID) or resource limits.
+    let manifest = format!(
+        "{{\"game_id\":\"{}\",\"display_name\":\"{}\",\"cpu_limit_percent\":{},\"ram_limit_mb\":{}}}",
+        game_id.replace('"', ""),
+        template.name.replace('"', ""),
+        template.default_cpu_limit_percent,
+        template.default_ram_limit_mb
+    );
+    session
+        .exec(&format!(
+            "echo {} | sudo tee {install_path}/.grimmnetz-instance.json > /dev/null",
+            games::shell_single_quote(&manifest)
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+
     let script = provisioning::render_install_script(&instance_id, &install_path, &unit_name, &template);
     let escaped_script = script.replace('\'', "'\\''");
     session
@@ -642,10 +661,22 @@ async fn attach_install_stream(
     if let Some(msg) = failure {
         return Err(msg);
     }
-    // The tail pipeline can end without either marker (log deleted, unit killed outside the
-    // normal fail() path, ...) - treating that as success would insert a phantom instance for a
-    // game that never actually finished installing.
+    // The tail pipeline can end without either marker - either a genuine transient drop (retry
+    // is right), or the GRIMMNETZ_FAILED line got written right as fail() also deleted the
+    // instance directory out from under the tail, losing the race to report it. Telling those
+    // apart matters: the ambiguous message below contains "Verbindung", which the frontend's
+    // retry filter treats as retryable - a real failure worded that way would retry forever and
+    // never show the user anything. Checking whether the directory still exists distinguishes
+    // them cheaply: gone means fail() really did run, even though its message was missed.
     if !done {
+        let dir_gone = session
+            .exec(&format!("test -d {install_path} || echo GRIMMNETZ_DIR_GONE"))
+            .await
+            .map(|out| out.contains("GRIMMNETZ_DIR_GONE"))
+            .unwrap_or(false);
+        if dir_gone {
+            return Err("Installation fehlgeschlagen (Fehlermeldung nicht mehr verfügbar, Instanzordner wurde bereits aufgeräumt).".to_string());
+        }
         return Err("Verbindung zum Install-Log verloren, bevor die Installation abgeschlossen war - erneut versuchen.".to_string());
     }
 
