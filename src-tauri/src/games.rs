@@ -8,7 +8,18 @@ pub struct GameInstall {
     pub install_type: String,
     #[serde(default)]
     pub app_id: Option<u32>,
+    #[serde(default)]
     pub steps: Vec<String>,
+    /// Docker-Image mit Tag (z. B. "itzg/minecraft-server:latest") - nur bei `install_type == "docker"`.
+    #[serde(default)]
+    pub image: Option<String>,
+    /// Umgebungsvariablen für `docker run -e KEY=VALUE ...`.
+    #[serde(default)]
+    pub docker_env: std::collections::BTreeMap<String, String>,
+    /// Shell-Schritte, die vor dem ersten Containerstart im Bind-Mount laufen (z. B. Factorios
+    /// server-settings.json) - laufen wie die klassischen `steps` als `gameserver`-User.
+    #[serde(default)]
+    pub pre_start_steps: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
