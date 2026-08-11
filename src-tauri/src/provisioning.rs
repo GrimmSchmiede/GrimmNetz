@@ -113,6 +113,16 @@ pub async fn bootstrap_server(ssh: &mut SshSession, timezone: Option<&str>) -> R
     )
     .await?;
 
+    // Docker via Valves... nein, via Dockers eigenes Installationsskript - deckt alle
+    // unterstuetzten Distros ab (erkennt Debian/Fedora/etc. selbst), spart uns die manuelle
+    // Paketverwaltungs-Fallunterscheidung wie bei den apt/dnf-Bloecken oben.
+    ssh.exec(
+        "command -v docker >/dev/null || \
+         (curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && sudo sh /tmp/get-docker.sh && rm -f /tmp/get-docker.sh)",
+    )
+    .await?;
+    ssh.exec("sudo systemctl enable --now docker").await?;
+
     ensure_swap(ssh).await?;
     limit_journal_size(ssh).await?;
     ensure_fail2ban(ssh, family).await?;
