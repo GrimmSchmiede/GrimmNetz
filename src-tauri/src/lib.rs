@@ -431,6 +431,57 @@ fn list_instances(state: State<'_, AppState>, server_id: String) -> Result<Vec<I
     db.list_instances(&server_id).map_err(|e| e.to_string())
 }
 
+/// Kicks off a game install as a detached, server-side systemd-oneshot unit and returns
+/// immediately - the install itself survives the app closing or the connection dropping.
+/// Progress is observed separately via `attach_install_stream`.
+#[tauri::command]
+async fn start_install(state: State<'_, AppState>, server_id: String, game_id: String) -> Result<String, String> {
+    let template = games::find_template(&game_id).ok_or_else(|| format!("Unbekanntes Spiel: {game_id}"))?;
+
+    let mut guard = acquire_session(&state, &server_id).await?;
+    let session = guard.as_mut().unwrap();
+
+    let instance_id = uuid::Uuid::new_v4().to_string();
+    let install_path = format!("/home/gameserver/instances/{instance_id}");
+    let unit_name = format!("grimmnetz-{instance_id}");
+    let install_unit_name = format!("grimmnetz-install-{instance_id}");
+
+    // Same ownership fix as the old install_game: /home/gameserver is root-owned, the install
+    // script itself runs each step as `gameserver`, so the dir needs to belong to that user first.
+    session
+        .exec(&format!("sudo mkdir -p {install_path} && sudo chown gameserver:gameserver {install_path}"))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let script = provisioning::render_install_script(&instance_id, &install_path, &unit_name, &template);
+    let escaped_script = script.replace('\'', "'\\''");
+    session
+        .exec(&format!(
+            "echo '{escaped_script}' | sudo tee {install_path}/install.sh > /dev/null && sudo chmod +x {install_path}/install.sh"
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // The install unit's own stdout/stderr (captured by systemd/journald AND redirected into
+    // install.log) is what attach_install_stream tails - RemainAfterExit keeps `systemctl
+    // is-active` truthful about "still running" for list_active_installs after the script exits.
+    let install_unit_contents = format!(
+        "[Unit]\nDescription=GrimmNetz Install {instance_id}\n\n\
+         [Service]\nType=oneshot\nRemainAfterExit=yes\nUser=gameserver\nWorkingDirectory={install_path}\n\
+         ExecStart=/bin/bash -c '/bin/bash {install_path}/install.sh > {install_path}/install.log 2>&1'\n\n\
+         [Install]\nWantedBy=multi-user.target\n"
+    );
+    provisioning::install_systemd_unit(session, &install_unit_name, &install_unit_contents)
+        .await
+        .map_err(|e| e.to_string())?;
+    session
+        .exec(&format!("sudo systemctl start {install_unit_name}"))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(instance_id)
+}
+
 /// Module B: installs a game server from its template — runs the install steps over SSH,
 /// generates + enables a systemd unit (running as `gameserver`, never root), and persists
 /// the instance so it shows up as a tile in the UI.
@@ -2106,6 +2157,7 @@ pub fn run() {
             list_games,
             list_instances,
             install_game,
+            start_install,
             discover_instances,
             get_instance_version,
             get_minecraft_live_status,
