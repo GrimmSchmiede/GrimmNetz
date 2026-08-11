@@ -547,6 +547,13 @@ async fn attach_install_stream(
         ram_limit_mb: template.default_ram_limit_mb,
     };
     let db = state.db.lock().map_err(|e| e.to_string())?;
+    // Reconnect-safe: attach_install_stream may be called again for an already-completed
+    // install (log gets re-tailed from byte 0, so DONE matches again). Only insert once -
+    // a second unconditional insert_instance would hit the instances.id PRIMARY KEY and
+    // fail with a UNIQUE constraint error on every attach after the first successful one.
+    if let Some(existing) = db.get_instance(&record.id).map_err(|e| e.to_string())? {
+        return Ok(existing);
+    }
     db.insert_instance(&record).map_err(|e| e.to_string())?;
     Ok(record)
 }
