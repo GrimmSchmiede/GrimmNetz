@@ -273,6 +273,77 @@ pub fn render_docker_systemd_unit(
     )
 }
 
+/// Docker-Variante von `render_install_script` (Task 1 des vorherigen Branches) - `docker pull`
+/// statt SteamCMD/curl-Download, `pre_start_steps` statt der vollen Install-Step-Liste (z.B.
+/// Factorios server-settings.json), sonst identisches Muster: GRIMMNETZ_STEP/DONE/FAILED-Marker,
+/// fail() räumt bei Fehler auf, Verzeichnis bleibt bis zum Selbst-chown root-only (siehe
+/// render_install_script für die Begründung - gilt hier identisch).
+pub fn render_docker_install_script(
+    instance_id: &str,
+    install_path: &str,
+    unit_name: &str,
+    template: &games::GameTemplate,
+    gameserver_uid: u32,
+    gameserver_gid: u32,
+) -> String {
+    let mut script = String::new();
+    script.push_str("#!/bin/bash\n");
+    script.push_str(&format!("cd {install_path} || exit 1\n"));
+    script.push_str(&format!(
+        "fail() {{ echo \"GRIMMNETZ_FAILED:$1\"; sudo rm -rf {install_path}; exit 1; }}\n"
+    ));
+    script.push_str(&format!("chown gameserver:gameserver {install_path}\n"));
+
+    let image = template.install.image.as_deref().unwrap_or_default();
+    let total = 2; // Schritt 1: Image ziehen, Schritt 2: Dienst einrichten - pre_start_steps zaehlen nicht separat mit
+
+    script.push_str(&format!("echo \"GRIMMNETZ_STEP 1/{total}\"\n"));
+    script.push_str(&format!(
+        "docker pull {} || fail \"Image-Download fehlgeschlagen\"\n",
+        games::shell_single_quote(image)
+    ));
+
+    for step in &template.install.pre_start_steps {
+        let rendered = games::render_step(step, instance_id, template.default_ram_limit_mb);
+        let quoted = games::shell_single_quote(&rendered);
+        script.push_str(&format!(
+            "sudo -u gameserver bash -c {quoted} || fail \"Konfiguration konnte nicht vorbereitet werden\"\n"
+        ));
+    }
+
+    let unit_contents = render_docker_systemd_unit(
+        instance_id,
+        install_path,
+        unit_name,
+        image,
+        &template.install.docker_env,
+        template.default_ram_limit_mb,
+        template.default_cpu_limit_percent,
+        gameserver_uid,
+        gameserver_gid,
+    );
+    let escaped_unit = unit_contents.replace('\'', "'\\''");
+    script.push_str(&format!("echo \"GRIMMNETZ_STEP 2/{total}\"\n"));
+    script.push_str(&format!(
+        "echo '{escaped_unit}' | sudo tee /etc/systemd/system/{unit_name}.service > /dev/null || fail \"Systemd-Unit konnte nicht geschrieben werden\"\n"
+    ));
+    script.push_str("sudo systemctl daemon-reload || fail \"daemon-reload fehlgeschlagen\"\n");
+    script.push_str(&format!(
+        "sudo systemctl enable --now {unit_name} || fail \"Dienst konnte nicht gestartet werden\"\n"
+    ));
+
+    for p in &template.ports {
+        script.push_str(&format!(
+            "(sudo ufw status 2>/dev/null | grep -q 'Status: active' && sudo ufw allow {}/{}) || \
+             (systemctl is-active --quiet firewalld 2>/dev/null && sudo firewall-cmd --permanent --add-port={}/{} && sudo firewall-cmd --reload) || true\n",
+            p.port, p.protocol, p.port, p.protocol
+        ));
+    }
+
+    script.push_str("echo \"GRIMMNETZ_DONE\"\n");
+    script
+}
+
 pub async fn install_systemd_unit(ssh: &mut SshSession, unit_name: &str, unit_contents: &str) -> Result<()> {
     let escaped = unit_contents.replace('\'', "'\\''");
     ssh.exec(&format!(
