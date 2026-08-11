@@ -1,10 +1,10 @@
 :root {
-  --nx-bg: #0d1117;
-  --nx-panel: #131a24;
-  --nx-panel-alt: #161f2c;
-  --nx-border: #1f2937;
+  --nx-bg: #1e1f1f;
+  --nx-panel: #353535;
+  --nx-panel-alt: #232527;
+  --nx-border: #2c2f33;
   --nx-text: #e6edf3;
-  --nx-text-muted: #8b98a5;
+  --nx-text-muted: #a3b0bd;
   --nx-accent: #2dd4bf;
   --nx-accent-soft: rgba(45, 212, 191, 0.12);
   --nx-success: #22c55e;

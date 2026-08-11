@@ -10,6 +10,7 @@ import PatchNotesDialog from "./PatchNotesDialog";
 import DirectoryBrowserDialog from "./DirectoryBrowserDialog";
 import EditServerDialog from "./EditServerDialog";
 import SftpBrowserDialog from "./SftpBrowserDialog";
+import SettingsDialog from "./SettingsDialog";
 import FirewallPromptDialog from "./FirewallPromptDialog";
 import InstanceDetail from "./InstanceDetail";
 import grimmNetzLogo from "./assets/grimmnetz_logo.png";
@@ -106,6 +107,14 @@ function App() {
   }
   const [localStats, setLocalStats] = useState<LocalSystemStats | null>(null);
   const [localCpuHistory, setLocalCpuHistory] = useState<number[]>([]);
+  const [refreshIntervalMs, setRefreshIntervalMs] = useState(3000);
+  const [showSettings, setShowSettings] = useState(false);
+
+  useEffect(() => {
+    invoke<{ close_to_tray: boolean; refresh_interval_ms: number }>("get_settings")
+      .then((s) => setRefreshIntervalMs(s.refresh_interval_ms))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const poll = () => {
@@ -117,9 +126,9 @@ function App() {
         .catch(() => {});
     };
     poll();
-    const interval = setInterval(poll, 3000);
+    const interval = setInterval(poll, refreshIntervalMs);
     return () => clearInterval(interval);
-  }, []);
+  }, [refreshIntervalMs]);
 
   useEffect(() => {
     invoke<GameTemplate[]>("list_games")
@@ -244,9 +253,9 @@ function App() {
   useEffect(() => {
     if (servers.length === 0) return;
     pollHardwareStats();
-    const interval = setInterval(pollHardwareStats, 8000);
+    const interval = setInterval(pollHardwareStats, refreshIntervalMs);
     return () => clearInterval(interval);
-  }, [servers]);
+  }, [servers, refreshIntervalMs]);
 
   useEffect(() => {
     if (!selectedServerId || instances.length === 0) return;
@@ -258,9 +267,9 @@ function App() {
       });
     };
     poll();
-    const interval = setInterval(poll, 5000);
+    const interval = setInterval(poll, refreshIntervalMs);
     return () => clearInterval(interval);
-  }, [selectedServerId, instances]);
+  }, [selectedServerId, instances, refreshIntervalMs]);
 
   async function runInstanceAction(instance: InstanceRecord, action: "start" | "stop" | "restart") {
     if (!selectedServerId) return;
@@ -377,7 +386,7 @@ function App() {
           >
             App-Store
           </button>
-          <button className="nx-nav-item">Einstellungen</button>
+          <button className="nx-nav-item" onClick={() => setShowSettings(true)}>Einstellungen</button>
         </nav>
 
         <div className="nx-sidebar-footer">
@@ -820,6 +829,10 @@ function App() {
 
       {sftpServer && (
         <SftpBrowserDialog serverId={sftpServer.id} serverName={sftpServer.name} onClose={() => setSftpServer(null)} />
+      )}
+
+      {showSettings && (
+        <SettingsDialog onClose={() => setShowSettings(false)} onRefreshIntervalChange={setRefreshIntervalMs} />
       )}
 
       {showPatchNotes && <PatchNotesDialog onClose={() => setShowPatchNotes(false)} />}

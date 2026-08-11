@@ -136,3 +136,6 @@ Bewusst zurückgestellte, aber sinnvolle Verbesserungen ohne laufende Kosten - k
 - **Interaktive Konsole:** Aktuell reines Log-Streaming - eine echte Zwei-Wege-Konsole (Befehle direkt eintippen) wäre der nächste Schritt
 - **Installationen von der App-Laufzeit entkoppeln:** Läuft eine Spiele-Installation aktuell über den offenen SSH-Stream - bricht die Verbindung während eines langen SteamCMD-Downloads ab oder wird die App geschlossen, ist der Install weg statt pausiert/fortsetzbar. Lösung wäre, den Install als eigenständigen systemd-oneshot-Dienst auf dem Server laufen zu lassen und den Fortschritt nur noch abzufragen, statt ihn live zu streamen
 - **CI-Validierung der generierten systemd-Units:** `systemd-analyze verify` gegen die von `render_systemd_unit` erzeugten Dateien in GitHub Actions laufen lassen, um Syntaxfehler bei neuen Spiele-Templates automatisch abzufangen - ohne echte SteamCMD-Downloads in CI zu brauchen
+- **Desktop-Benachrichtigungen:** Meldung bei Server-Absturz oder erreichtem RAM-Limit, statt es nur beim aktiven Draufschauen zu bemerken
+- **Theme-Wechsler:** Echter Light-Mode bzw. Deep-Black-Variante für OLED-Monitore, zusätzlich zum aktuellen Dark-Theme
+- **SSH-Schlüsselverwaltung:** Aktuell nur Passwort-Login - Key-basierte Authentifizierung wäre ein eigenes, größeres Feature

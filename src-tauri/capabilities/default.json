@@ -18,6 +18,7 @@
     {
       "identifier": "http:default",
       "allow": [{ "url": "https://factorio.com/*" }]
-    }
+    },
+    "autostart:default"
   ]
 }

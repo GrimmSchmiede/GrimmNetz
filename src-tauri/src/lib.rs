@@ -25,6 +25,10 @@ pub struct AppState {
     /// Kept alive across polls (not re-created per call) so sysinfo's CPU/network deltas are
     /// measured against the previous poll instead of needing an artificial sleep every time.
     pub local_sys: Mutex<LocalSystemMonitor>,
+    /// If true, closing the window hides it to the system tray instead of quitting - only the
+    /// tray menu's "Beenden" (or the frontend explicitly asking to quit) actually exits.
+    pub close_to_tray: Mutex<bool>,
+    pub settings_path: std::path::PathBuf,
 }
 
 pub struct LocalSystemMonitor {
@@ -1820,6 +1824,51 @@ async fn stream_instance_logs(
     Ok(())
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct AppSettings {
+    #[serde(default)]
+    pub close_to_tray: bool,
+    #[serde(default = "default_refresh_interval_ms")]
+    pub refresh_interval_ms: u32,
+}
+
+fn default_refresh_interval_ms() -> u32 {
+    3000
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self { close_to_tray: false, refresh_interval_ms: default_refresh_interval_ms() }
+    }
+}
+
+fn load_settings(path: &std::path::Path) -> AppSettings {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+fn get_settings(state: State<'_, AppState>) -> AppSettings {
+    let close_to_tray = *state.close_to_tray.lock().unwrap();
+    let mut settings = load_settings(&state.settings_path);
+    settings.close_to_tray = close_to_tray;
+    settings
+}
+
+#[tauri::command]
+fn save_settings(state: State<'_, AppState>, settings: AppSettings) -> Result<(), String> {
+    *state.close_to_tray.lock().map_err(|e| e.to_string())? = settings.close_to_tray;
+    let json = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+    std::fs::write(&state.settings_path, json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1828,20 +1877,85 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
             let db_path = app_data_dir.join("grimmnetz.db");
             let db_key = keyring_store::get_or_create_db_key()?;
             let db = Db::open(db_path, &db_key)?;
+            let settings_path = app_data_dir.join("settings.json");
+            let settings = load_settings(&settings_path);
             app.manage(AppState {
                 db: Mutex::new(db),
                 ssh_pool: Mutex::new(HashMap::new()),
                 local_sys: Mutex::new(LocalSystemMonitor::new()),
+                close_to_tray: Mutex::new(settings.close_to_tray),
+                settings_path,
             });
+
+            // Tray icon: left-click shows/focuses the window, menu offers an explicit quit -
+            // the only way this app should ever exit unprompted once "In Tray minimieren" is on.
+            use tauri::menu::{Menu, MenuItem};
+            use tauri::tray::TrayIconBuilder;
+            let show_item = MenuItem::with_id(app, "show", "Öffnen", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Beenden", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "quit" => app.exit(0),
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        button_state: tauri::tray::MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+
+            if let Some(window) = app.get_webview_window("main") {
+                let handle = app.handle().clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        let state = handle.state::<AppState>();
+                        let close_to_tray = *state.close_to_tray.lock().unwrap();
+                        if close_to_tray {
+                            api.prevent_close();
+                            if let Some(w) = handle.get_webview_window("main") {
+                                let _ = w.hide();
+                            }
+                        }
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            get_settings,
+            save_settings,
+            quit_app,
             get_local_system_stats,
             add_server,
             check_firewall_active,

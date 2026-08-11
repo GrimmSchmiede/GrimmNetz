@@ -8,6 +8,15 @@ export type PatchNote = {
 // newest first. Not every internal commit needs its own entry.
 export const PATCH_NOTES: PatchNote[] = [
   {
+    version: "0.1.41",
+    date: "2026-08-11",
+    items: [
+      "Neu: Einstellungen-Seite mit Autostart (App startet mit Windows), 'In Tray minimieren' (Schließen legt die App nur ins Tray statt sie zu beenden) und einstellbarem Aktualisierungs-Intervall (1/2/5 Sek.)",
+      "System-Tray-Icon mit Öffnen/Beenden-Menü",
+      "Design-Feintuning: neutralere Grautöne statt Blaustich, Rahmen an mehreren Karten entfernt",
+    ],
+  },
+  {
     version: "0.1.40",
     date: "2026-08-09",
     items: [

@@ -25,7 +25,7 @@
   grid-column: 1 / -1;
   height: 36px;
   background: var(--nx-panel);
-  border-bottom: 1px solid var(--nx-border);
+  border-bottom: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -34,7 +34,7 @@
 }
 
 .nx-titlebar-title {
-  font-size: 12px;
+  font-size: 14px;
   color: var(--nx-text-muted);
   font-weight: 600;
   letter-spacing: 0.02em;
@@ -72,6 +72,8 @@
   grid-template-rows: 36px 1fr;
   height: 100vh;
   overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--nx-accent) 40%, transparent);
+  box-sizing: border-box;
 }
 
 .nx-shell > .nx-titlebar {
@@ -287,18 +289,19 @@
   width: 100%;
   padding: 8px 12px;
   border-radius: 8px;
-  border: 1px solid var(--nx-border);
+  border: none;
   background: var(--nx-panel);
   color: var(--nx-text);
   margin-bottom: 12px;
 }
 
 .nx-server-card {
-  border: 1px solid var(--nx-border);
+  border: none;
   border-radius: var(--nx-radius);
   padding: 12px;
   margin-bottom: 10px;
   cursor: pointer;
+  background: var(--nx-panel);
 }
 
 .nx-server-card.selected {
@@ -534,8 +537,10 @@
 
 .nx-game-card {
   border: 1px solid var(--nx-border);
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: var(--nx-radius);
   padding: 14px;
+  background: var(--nx-panel);
 }
 
 .nx-store-scroll {
@@ -548,7 +553,7 @@
   display: flex;
   align-items: center;
   gap: 14px;
-  border: 1px solid var(--nx-border);
+  border: none;
   border-radius: var(--nx-radius);
   background: var(--nx-panel);
   padding: 14px 18px;
@@ -768,6 +773,7 @@
 
 .nx-instance-card {
   border: 1px solid var(--nx-border);
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: var(--nx-radius);
   padding: 14px;
   background: var(--nx-panel);
@@ -984,7 +990,7 @@
 
 .nx-chart-card,
 .nx-fact-card {
-  border: 1px solid color-mix(in srgb, var(--nx-accent) 40%, transparent);
+  border: none;
   border-radius: var(--nx-radius);
   padding: 14px;
   background: var(--nx-panel);
@@ -1082,7 +1088,7 @@
 }
 
 .nx-resource-bar-card {
-  border: 1px solid color-mix(in srgb, var(--nx-accent) 40%, transparent);
+  border: none;
   border-radius: var(--nx-radius);
   background: var(--nx-panel);
   padding: 16px;
