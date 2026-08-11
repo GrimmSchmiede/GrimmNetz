@@ -482,6 +482,44 @@ async fn start_install(state: State<'_, AppState>, server_id: String, game_id: S
     Ok(instance_id)
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ActiveInstall {
+    pub instance_id: String,
+    pub game_id: String,
+    pub running: bool,
+}
+
+/// Server-side discovery of in-progress or just-finished installs, independent of the local
+/// DB - this is what lets a second PC (or the same PC after being closed for days) see and
+/// reattach to an install it never started itself. `game_id` is read back out of the rendered
+/// install.sh (the game_id isn't otherwise recorded anywhere before GRIMMNETZ_DONE lands).
+#[tauri::command]
+async fn list_active_installs(state: State<'_, AppState>, server_id: String) -> Result<Vec<ActiveInstall>, String> {
+    let mut guard = acquire_session(&state, &server_id).await?;
+    let session = guard.as_mut().unwrap();
+    let output = session
+        .exec(
+            "for d in /home/gameserver/instances/*/; do \
+               id=$(basename \"$d\"); \
+               log=\"$d/install.log\"; \
+               [ -f \"$log\" ] || continue; \
+               tail -c 4096 \"$log\" | grep -qE 'GRIMMNETZ_DONE|GRIMMNETZ_FAILED' && continue; \
+               unit=\"grimmnetz-install-$id\"; \
+               active=$(systemctl is-active \"$unit\" 2>/dev/null); \
+               [ \"$active\" = \"active\" ] || continue; \
+               echo \"$id\"; \
+             done",
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(output
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|id| ActiveInstall { instance_id: id.trim().to_string(), game_id: String::new(), running: true })
+        .collect())
+}
+
 /// Tails the running (or already-finished) install's log from the start and turns each line
 /// back into the same InstallEvent stream the old live-streaming install_game produced -
 /// reconnect-safe because re-reading the whole (short) log file from byte 0 is cheap and just
@@ -2234,6 +2272,7 @@ pub fn run() {
             list_instances,
             install_game,
             start_install,
+            list_active_installs,
             attach_install_stream,
             discover_instances,
             get_instance_version,
