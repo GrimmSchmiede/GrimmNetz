@@ -8,6 +8,16 @@ export type PatchNote = {
 // newest first. Not every internal commit needs its own entry.
 export const PATCH_NOTES: PatchNote[] = [
   {
+    version: "0.1.45",
+    date: "2026-08-13",
+    items: [
+      "Neu: SSH-Key-Authentifizierung - GrimmNetz generiert automatisch einen eigenen Schlüssel pro Server und wechselt nach dem ersten Login von Passwort auf Key-Auth, ohne dass du etwas tun musst",
+      "'Neuer Cloud-Server'-Modus beim Hinzufügen: Key vorab erzeugen und beim Server-Erstellen direkt beim Provider (z.B. Hetzner) hinterlegen - umgeht damit Anbieter, die beim ersten Passwort-Login eine Passwortänderung erzwingen, komplett",
+      "Bugfix: Server mit erzwungenem Passwort-Ablauf (z.B. frisch gemietete Hetzner-Server) konnten bisher nur über die Provider-Webkonsole eingerichtet werden - läuft jetzt automatisch und vollständig über GrimmNetz",
+      "Bugfix: Server-Einrichtung konnte bei einem frischen Server mit knappem Zeitlimit abbrechen (z.B. bei apt-get-Updates) - Zeitlimit für diese Schritte deutlich erhöht",
+    ],
+  },
+  {
     version: "0.1.44",
     date: "2026-08-12",
     items: [

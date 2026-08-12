@@ -9,6 +9,23 @@ use anyhow::{anyhow, Result};
 /// fails. Idempotent: safe to call on every connection, a no-op once already set up.
 /// Uses the one password we already have to answer sudo's `-S` stdin prompt exactly once.
 pub async fn ensure_passwordless_sudo(ssh: &mut SshSession, username: &str, password: &str) -> Result<()> {
+    // Cloud-Provider (u.a. Hetzner) setzen bei einer frisch vergebenen/zurückgesetzten
+    // root-Passwort ein Ablaufdatum, das PAM bei jedem `sudo` interaktiv abfragen will ("Password
+    // change required but no TTY available") - selbst `sudo -n true` scheitert daran. Als `root`
+    // sind wir bereits voll privilegiert und können das Ablaufdatum ganz ohne `sudo` selbst
+    // zurücksetzen (ein reiner Befehl über den SSH-Kanal braucht dafür kein PAM-Passwort-Prompt,
+    // nur `sudo` selbst löst diese Prüfung aus) - damit läuft der komplette Login- und
+    // Provisionierungs-Flow über GrimmNetz, ohne dass der User einmal in die Provider-Webkonsole
+    // muss, um das Passwort manuell zu ändern. Best-effort: schlägt es fehl (z.B. weil `chage`
+    // fehlt), läuft der Rest wie gehabt weiter.
+    if username == "root" {
+        // `-d` allein reicht nicht, wenn der Provider zusätzlich ein maximales Passwort-Alter
+        // (`-M`) gesetzt hat (Hetzner-Images tun das) - dann gilt das Konto sofort wieder als
+        // abgelaufen, egal wie aktuell das Änderungsdatum ist. `-M -1` deaktiviert die
+        // Ablaufprüfung komplett.
+        let _ = ssh.exec("chage -M -1 -d $(date +%Y-%m-%d) root 2>&1").await;
+    }
+
     let check = ssh.exec("sudo -n true 2>&1; echo EXIT:$?").await?;
     if check.contains("EXIT:0") {
         return Ok(()); // already configured
@@ -73,22 +90,24 @@ pub async fn bootstrap_server(ssh: &mut SshSession, timezone: Option<&str>) -> R
     let family = detect_distro_family(ssh).await?;
     match family {
         DistroFamily::Debian => {
-            ssh.exec("sudo apt-get update -y").await?;
-            ssh.exec(
+            // apt-get update/install kann auf einem frisch aufgesetzten Server (v.a. direkt nach
+            // einem Provider-Rebuild) deutlich länger als die üblichen 20s brauchen.
+            ssh.exec_long("sudo apt-get update -y").await?;
+            ssh.exec_long(
                 "sudo apt-get install -y curl wget tar unzip jq openjdk-21-jre-headless openjdk-25-jre-headless \
                  software-properties-common lib32gcc-s1 lib32stdc++6 unattended-upgrades",
             )
             .await?;
             // Debian's unattended-upgrades package installs disabled by default - enabling it
             // needs a debconf answer, not just the package being present.
-            ssh.exec(
+            ssh.exec_long(
                 "echo 'unattended-upgrades unattended-upgrades/enable_auto_updates boolean true' | \
                  sudo debconf-set-selections && sudo dpkg-reconfigure -f noninteractive unattended-upgrades",
             )
             .await?;
         }
         DistroFamily::Fedora => {
-            ssh.exec(
+            ssh.exec_long(
                 "sudo dnf install -y curl wget tar unzip jq java-21-openjdk-headless java-latest-openjdk-headless \
                  glibc.i686 libstdc++.i686 ncurses-libs.i686 dnf-automatic",
             )
@@ -105,7 +124,7 @@ pub async fn bootstrap_server(ssh: &mut SshSession, timezone: Option<&str>) -> R
     // distro - sidesteps package-manager differences entirely (and the Ubuntu `steamcmd`
     // package's /usr/games/steamcmd not being on the non-interactive SSH $PATH, which bit
     // us before).
-    ssh.exec(
+    ssh.exec_long(
         "test -x /home/gameserver/.steamcmd/steamcmd.sh || \
          sudo -u gameserver bash -c \"mkdir -p /home/gameserver/.steamcmd && \
          cd /home/gameserver/.steamcmd && \
@@ -116,7 +135,7 @@ pub async fn bootstrap_server(ssh: &mut SshSession, timezone: Option<&str>) -> R
     // Docker via Valves... nein, via Dockers eigenes Installationsskript - deckt alle
     // unterstuetzten Distros ab (erkennt Debian/Fedora/etc. selbst), spart uns die manuelle
     // Paketverwaltungs-Fallunterscheidung wie bei den apt/dnf-Bloecken oben.
-    ssh.exec(
+    ssh.exec_long(
         "command -v docker >/dev/null || \
          (curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && sudo sh /tmp/get-docker.sh && rm -f /tmp/get-docker.sh)",
     )
@@ -159,10 +178,10 @@ async fn limit_journal_size(ssh: &mut SshSession) -> Result<()> {
 async fn ensure_fail2ban(ssh: &mut SshSession, family: DistroFamily) -> Result<()> {
     match family {
         DistroFamily::Debian => {
-            ssh.exec("sudo apt-get install -y fail2ban").await?;
+            ssh.exec_long("sudo apt-get install -y fail2ban").await?;
         }
         DistroFamily::Fedora => {
-            ssh.exec("sudo dnf install -y fail2ban").await?;
+            ssh.exec_long("sudo dnf install -y fail2ban").await?;
         }
     }
     ssh.exec(
@@ -427,11 +446,11 @@ pub async fn enable_firewall_with_rollback(ssh: &mut SshSession, family: DistroF
 
     match family {
         DistroFamily::Debian => {
-            ssh.exec("command -v ufw &>/dev/null || sudo apt-get install -y ufw").await?;
+            ssh.exec_long("command -v ufw &>/dev/null || sudo apt-get install -y ufw").await?;
         }
         DistroFamily::Fedora => {}
     }
-    ssh.exec("command -v at &>/dev/null || (sudo apt-get install -y at || sudo dnf install -y at)")
+    ssh.exec_long("command -v at &>/dev/null || (sudo apt-get install -y at || sudo dnf install -y at)")
         .await?;
     ssh.exec("sudo systemctl enable --now atd").await?;
 

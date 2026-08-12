@@ -10,7 +10,7 @@ type Props = {
 
 export default function EditServerDialog({ server, onClose, onUpdated }: Props) {
   const [name, setName] = useState(server.name);
-  const [host, setHost] = useState(server.host);
+  const [host, setHost] = useState(server.host ?? "");
   const [port, setPort] = useState(String(server.port));
   const [username, setUsername] = useState(server.username);
   const [password, setPassword] = useState("");

@@ -1,7 +1,7 @@
 export type ServerRecord = {
   id: string;
   name: string;
-  host: string;
+  host: string | null;
   port: number;
   username: string;
   os_info: string | null;
