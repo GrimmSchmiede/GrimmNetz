@@ -158,6 +158,33 @@ fn ssh_key_keyring_name(server_id: &str) -> String {
     format!("{server_id}::ssh_key")
 }
 
+/// Erzeugt ein internes Zufallspasswort für die automatische Rotation. Ein v4-UUID-String wäre
+/// nur Kleinbuchstaben/Ziffern/Bindestriche und scheitert damit an `pam_pwquality`-Regeln, die
+/// mehrere Zeichenklassen verlangen. Deshalb: 24 Zeichen aus Groß-/Kleinbuchstaben, Ziffern und
+/// wenigen Symbolen (bewusst ohne `'`, `` ` ``, `$`, `\` und `"`, da das Passwort an anderer
+/// Stelle in Shell-Kommandos interpoliert wird), mit garantiert je einem Zeichen pro Klasse.
+fn generate_random_password() -> String {
+    use rand::seq::SliceRandom;
+    use rand::Rng;
+
+    const UPPER: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ";
+    const LOWER: &[u8] = b"abcdefghijkmnpqrstuvwxyz";
+    const DIGIT: &[u8] = b"23456789";
+    const SYMBOL: &[u8] = b"!@#%^&*-_=+";
+
+    let mut rng = rand::thread_rng();
+    let pool: Vec<u8> = [UPPER, LOWER, DIGIT, SYMBOL].concat();
+    let mut chars: Vec<u8> = [UPPER, LOWER, DIGIT, SYMBOL]
+        .iter()
+        .map(|class| class[rng.gen_range(0..class.len())])
+        .collect();
+    while chars.len() < 24 {
+        chars.push(pool[rng.gen_range(0..pool.len())]);
+    }
+    chars.shuffle(&mut rng);
+    String::from_utf8(chars).expect("ASCII-Pool")
+}
+
 /// Cloud-Provider (u.a. Hetzner) markieren ein frisch vergebenes/zurückgesetztes root-Passwort
 /// als sofort abgelaufen - sshd/PAM verweigert dann JEDEN nicht-interaktiven Befehl mit
 /// "Password change required but no TTY available", nicht nur `sudo` (siehe
@@ -166,6 +193,11 @@ fn ssh_key_keyring_name(server_id: &str) -> String {
 /// durch - mit einem intern generierten, dem User nie gezeigten Zufallspasswort, da GrimmNetz
 /// ab dem nächsten Connect ohnehin auf Key-Auth wechselt. Gibt bei einer Rotation die neue
 /// Session UND das neue Passwort zurück, damit der Aufrufer es im Keyring aktualisieren kann.
+/// Das rotierte Passwort wird SOFORT nach dem erfolgreichen Wechsel unter `server_id` im Keyring
+/// abgelegt - noch vor dem Reconnect. Sonst wäre der Server nach einem Fehlschlag eines der
+/// Folgeschritte dauerhaft unerreichbar: remote gilt das neue Passwort, gespeichert wäre das alte.
+/// Schlägt dieses Speichern fehl, ist das ein harter Fehler (die einzige Kopie eines lebenden
+/// Credentials), kein still verschluckter Best-effort-Versuch.
 async fn ensure_password_current(
     mut session: ssh::SshSession,
     host: &str,
@@ -173,6 +205,7 @@ async fn ensure_password_current(
     username: &str,
     password: &str,
     known_fingerprint: Option<&str>,
+    server_id: Option<&str>,
 ) -> Result<(ssh::SshSession, Option<String>), String> {
     // sshd/PAM verweigert bei einem abgelaufenen Passwort nicht zwingend mit einem SSH-Protokoll-
     // Fehler - die Warnung kommt oft als ganz normale (Extended-Data-)Ausgabe des Befehls selbst
@@ -188,11 +221,20 @@ async fn ensure_password_current(
         return probe.map(|_| (session, None)).map_err(|e| e.to_string());
     }
 
-    let new_password = uuid::Uuid::new_v4().to_string();
+    let new_password = generate_random_password();
     session
         .change_expired_password(password, &new_password)
         .await
         .map_err(|e| e.to_string())?;
+    // Ab hier gilt remote NUR noch das neue Passwort - sofort persistieren, bevor irgendein
+    // weiterer (potenziell scheiternder) Schritt folgt.
+    if let Some(id) = server_id {
+        keyring_store::store_secret(id, &new_password).map_err(|e| {
+            format!(
+                "Das Passwort wurde auf dem Server geändert, konnte aber nicht im Keyring gespeichert werden: {e}"
+            )
+        })?;
+    }
     // Der Server trennt die Verbindung nach einem erzwungenen Passwortwechsel ohnehin -
     // frischer Connect mit dem neuen Passwort statt die alte Session weiterzuverwenden.
     drop(session);
@@ -236,11 +278,9 @@ async fn connect_with_key_or_password(
     let session = ssh::SshSession::connect_password(host, port, username, &password, known_fingerprint)
         .await
         .map_err(|e| e.to_string())?;
-    let (mut session, rotated_password) =
-        ensure_password_current(session, host, port, username, &password, known_fingerprint).await?;
-    if let Some(new_password) = &rotated_password {
-        let _ = keyring_store::store_secret(server_id, new_password);
-    }
+    // Ein rotiertes Passwort hat `ensure_password_current` bereits selbst im Keyring abgelegt.
+    let (mut session, _rotated_password) =
+        ensure_password_current(session, host, port, username, &password, known_fingerprint, Some(server_id)).await?;
 
     if let Ok((_, private_pem, public_line)) = ssh_keys::generate_and_format(server_id) {
         // `exec` liefert keinen Exit-Code des Remote-Befehls, deshalb prüfen wir den Marker in
@@ -327,12 +367,16 @@ async fn add_server(state: State<'_, AppState>, input: AddServerInput) -> Result
         }
     }
 
+    // Die Server-ID wird schon hier erzeugt (statt erst nach dem Key-Rollout), damit ein
+    // automatisch rotiertes Passwort sofort unter dem endgültigen Keyring-Schlüssel landen kann.
+    let id = uuid::Uuid::new_v4().to_string();
+
     let session = ssh::SshSession::connect_password(&input.host, input.port, &input.username, &input.password, None)
         .await
         .map_err(|e| e.to_string())?;
     let host_fingerprint = session.host_fingerprint.clone();
     let (mut session, rotated_password) =
-        ensure_password_current(session, &input.host, input.port, &input.username, &input.password, Some(&host_fingerprint)).await?;
+        ensure_password_current(session, &input.host, input.port, &input.username, &input.password, Some(&host_fingerprint), Some(&id)).await?;
     let effective_password = rotated_password.unwrap_or_else(|| input.password.clone());
     provisioning::ensure_passwordless_sudo(&mut session, &input.username, &effective_password)
         .await
@@ -340,8 +384,6 @@ async fn add_server(state: State<'_, AppState>, input: AddServerInput) -> Result
     provisioning::bootstrap_server(&mut session, input.timezone.as_deref())
         .await
         .map_err(|e| e.to_string())?;
-
-    let id = uuid::Uuid::new_v4().to_string();
 
     if let Ok((_, private_pem, public_line)) = ssh_keys::generate_and_format(&id) {
         // Marker statt `is_ok()` - siehe `connect_with_key_or_password`.

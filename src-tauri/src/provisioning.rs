@@ -100,7 +100,7 @@ pub async fn bootstrap_server(ssh: &mut SshSession, timezone: Option<&str>) -> R
             .await?;
             // Debian's unattended-upgrades package installs disabled by default - enabling it
             // needs a debconf answer, not just the package being present.
-            ssh.exec(
+            ssh.exec_long(
                 "echo 'unattended-upgrades unattended-upgrades/enable_auto_updates boolean true' | \
                  sudo debconf-set-selections && sudo dpkg-reconfigure -f noninteractive unattended-upgrades",
             )

@@ -5,12 +5,18 @@ use russh_keys::key;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
+/// Pause im Remote-Output, ab der ein Prompt als "fertig ausgegeben" gilt.
+const QUIET_GAP: Duration = Duration::from_millis(700);
+
+/// Obergrenze für den kompletten automatisierten Passwortwechsel - `wait_for_quiet` allein ist
+/// unbegrenzt (ein dauerhaft nachplätschernder Banner würde die Pause nie erreichen), und das
+/// Ganze läuft unter dem Per-Server-Verbindungslock.
+const PASSWORD_CHANGE_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Drains a channel's output until there's a pause of `QUIET_GAP` with no new data - used to
 /// detect "the remote side just finished printing a prompt and is waiting for input" without
 /// having to match the prompt's exact (locale-dependent) text. Returns once the pause is
 /// observed, or immediately if the channel closes.
-const QUIET_GAP: Duration = Duration::from_millis(700);
-
 async fn wait_for_quiet(channel: &mut Channel<Msg>, transcript: &mut Vec<u8>) -> Result<()> {
     loop {
         match tokio::time::timeout(QUIET_GAP, channel.wait()).await {
@@ -291,6 +297,19 @@ impl SshSession {
     /// Passwort zusätzlich gesendet werden muss - einziger Textbezug hier, alles andere bleibt
     /// zeitbasiert.
     pub async fn change_expired_password(&mut self, current_password: &str, new_password: &str) -> Result<()> {
+        // Entfernt beide Klartext-Passwörter aus einem Transcript, bevor es in einer Fehlermeldung
+        // (und damit bis in die UI) landet - bei einem Prompt-Versatz kann eine interaktive Shell
+        // eine gesendete Zeile echoen.
+        let redact = |text: &str| {
+            let mut out = text.to_string();
+            for secret in [new_password, current_password] {
+                if !secret.is_empty() {
+                    out = out.replace(secret, "[REDACTED]");
+                }
+            }
+            out
+        };
+        let attempt = async {
         let mut channel = self.handle.channel_open_session().await?;
         channel
             .request_pty(false, "xterm", 80, 24, 0, 0, &[])
@@ -303,8 +322,12 @@ impl SshSession {
 
         let mut transcript = Vec::new();
         wait_for_quiet(&mut channel, &mut transcript).await?;
+        // Momentaufnahme AUSSCHLIESSLICH der Bytes vor der ersten gesendeten Zeile: die
+        // Entscheidung fällt genau einmal und wird später nicht auf dem weiterwachsenden
+        // Transcript neu ausgewertet.
         let pre = String::from_utf8_lossy(&transcript).to_lowercase();
         let asks_current_first = pre.contains("current") || pre.contains("aktuell");
+        drop(pre);
 
         let lines: &[&str] = if asks_current_first {
             &[current_password, new_password, new_password]
@@ -325,9 +348,12 @@ impl SshSession {
         // schließen - der Server trennt die Verbindung nach einem erzwungenen Passwortwechsel
         // ohnehin selbst, ein neuer Connect mit dem neuen Passwort folgt direkt danach.
         let _ = wait_for_quiet(&mut channel, &mut transcript).await;
-        let output = String::from_utf8_lossy(&transcript).to_lowercase();
+        // Auch die Erfolgsprüfung läuft auf dem redigierten Text: enthielte ein Passwort zufällig
+        // einen dieser Teilstrings, würde ein Echo sonst fälschlich als Erfolg gelten.
+        let output = redact(&String::from_utf8_lossy(&transcript)).to_lowercase();
         if output.contains("passwd: password updated successfully")
-            || output.contains("password changed")
+            // `passwd`-Präfix wie oben, nur die auf PAM-Systemen übliche Formulierung.
+            || output.contains("passwd: all authentication tokens updated successfully")
             || output.contains("passwort erfolgreich")
         {
             return Ok(());
@@ -338,12 +364,19 @@ impl SshSession {
         {
             return Err(anyhow!(
                 "Erzwungener Passwortwechsel fehlgeschlagen - Server-Antwort: {}",
-                String::from_utf8_lossy(&transcript).trim()
+                redact(String::from_utf8_lossy(&transcript).trim())
             ));
         }
         // Kein eindeutiger Erfolgs-/Fehlertext gefunden (unbekannte PAM-Meldung) - optimistisch
         // weitermachen, der anschließende Connect mit dem neuen Passwort ist der eigentliche Test.
         Ok(())
+        };
+        match tokio::time::timeout(PASSWORD_CHANGE_TIMEOUT, attempt).await {
+            Ok(result) => result,
+            Err(_) => Err(anyhow!(
+                "Zeitüberschreitung beim automatischen Passwortwechsel (Server antwortet nicht wie erwartet)"
+            )),
+        }
     }
 
     /// Runs a (potentially long-lived / follow-mode) command, invoking `on_line` for every
