@@ -6,18 +6,21 @@
       "subtitle": "Paper (aktuellste Version)",
       "icon": "minecraft.png",
       "requires": [],
-      "tested_on": [],
+      "tested_on": ["Ubuntu 24.04", "Ubuntu 26.04"],
       "install": {
         "type": "docker",
-        "image": "itzg/minecraft-server:latest",
+        "image": "itzg/minecraft-server:stable",
         "docker_env": {
           "EULA": "TRUE",
           "TYPE": "PAPER",
-          "MEMORY": "4096M"
+          "MEMORY": "4096M",
+          "ENABLE_RCON": "true",
+          "RCON_PORT": "25575"
         },
         "pre_start_steps": []
       },
       "start_command": "",
+      "rcon": { "port": 25575, "password_file": "rcon_password", "broadcast_command": "say {message}", "save_command": "save-all" },
       "default_cpu_limit_percent": 200,
       "default_ram_limit_mb": 4096,
       "config": {
@@ -190,7 +193,7 @@
       "icon": "factorio.png",
       "console_say_format": "{message}",
       "requires": [],
-      "tested_on": [],
+      "tested_on": ["Ubuntu 24.04", "Ubuntu 26.04"],
       "install": {
         "type": "docker",
         "image": "factoriotools/factorio:stable",

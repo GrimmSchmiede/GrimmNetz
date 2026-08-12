@@ -83,11 +83,12 @@ Der GrimmNetz App-Store unterstützt die 1-Klick-Installation für:
 
 | Spiel | Getestet | Distro |
 | :--- | :---: | :--- |
-| 🟩 **Minecraft (Paper)** *(mit Auto-Updates)* | ✅ | Ubuntu 24.04 |
+| 🟩 **Minecraft (Paper)** *(Docker, mit Auto-Updates)* | ✅ | Ubuntu 24.04, Ubuntu 26.04 |
 | 🧟 **7 Days to Die** | ✅ | Ubuntu 24.04 |
 | 🌴 **Palworld** | — | — |
 | 🐺 **DayZ** | — | — |
-| ⚙️ **Factorio** | ✅ | Ubuntu 24.04 |
+| ⚙️ **Factorio** *(Docker, Stable-Branch)* | ✅ | Ubuntu 24.04, Ubuntu 26.04 |
+| ⚙️ **Factorio (Experimental)** *(Docker, Space-Age-Branch)* | — | — |
 | 🏭 **Satisfactory** | — | — |
 | 🪓 **Valheim** | — | — |
 | 🧛 **V Rising** | — | — |
@@ -142,3 +143,5 @@ Bewusst zurückgestellte, aber sinnvolle Verbesserungen ohne laufende Kosten - k
 - **Spieler-/Welt-Status anzeigen:** Aktuell nur CPU/RAM/Online-Status pro Instanz sichtbar, keine Anzeige wer online ist oder welche Welt/Save aktiv ist
 - **Geplanten Neustart/Stop abbrechen:** Läuft gerade ein Countdown (Verwalten-Tab), gibt es aktuell keine Möglichkeit ihn zu stoppen - ein Abbrechen-Button mit passender Server-Ansage ("Neustart wurde abgebrochen") wäre sinnvoll
 - **Öffentliche Server-Listung (Factorio):** Aktuell fest auf `visibility.public: false` (nur LAN/Direktverbindung) - öffentliche Listung bräuchte Factorio.com-Account/Token-Verwaltung und verschachtelte Config-Felder, die der aktuelle Config-Editor (nur flache Top-Level-Keys) noch nicht unterstützt
+- **Crash-Loop-Erkennung mit Reset-Button:** Wenn ein Container wiederholt neu startet (z.B. kaputte Welt-Migration bei Minecraft), gibt es aktuell keine erkennbare Fehlermeldung in der App - für unerfahrene User wäre ein automatisch erkannter "Server startet immer wieder neu"-Hinweis mit einem Button, der z.B. den Welt-Ordner zurücksetzt, deutlich zugänglicher als SSH
+- **`start_install`-Absturzfenster absichern:** Wird die App exakt zwischen Unit-Schreiben und dem finalen `systemctl start`-Aufruf geschlossen, bleibt eine geschriebene, aber nie gestartete Install-Unit zurück, die `discover_instances`/`list_active_installs` nicht erkennt (weder laufend noch fertig) - sehr kleines Zeitfenster, bisher nur einmal live reproduziert und manuell per SSH nachgestartet, kein akuter Bedarf

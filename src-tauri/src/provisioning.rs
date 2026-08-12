@@ -322,7 +322,7 @@ pub fn render_docker_install_script(
         ));
     }
 
-    let rendered_env: std::collections::BTreeMap<String, String> = template
+    let mut rendered_env: std::collections::BTreeMap<String, String> = template
         .install
         .docker_env
         .iter()
@@ -333,6 +333,22 @@ pub fn render_docker_install_script(
             )
         })
         .collect();
+
+    // RCON-Passwort wird hier (statt statisch in games.json) pro Instanz zufaellig erzeugt, weil
+    // es sowohl in den Container-Env (RCON_PASSWORD) als auch in die Passwort-Datei geschrieben
+    // werden muss, die build_broadcast_command spaeter zum Verbinden liest.
+    if let Some(rcon) = &template.rcon {
+        let password = uuid::Uuid::new_v4().simple().to_string();
+        rendered_env.insert("RCON_PASSWORD".to_string(), password.clone());
+        let password_path = format!("{install_path}/{}", rcon.password_file);
+        script.push_str(&format!(
+            "sudo -u gameserver bash -c {} || fail \"RCON-Passwort konnte nicht geschrieben werden\"\n",
+            games::shell_single_quote(&format!(
+                "echo {} > {password_path} && chmod 600 {password_path}",
+                games::shell_single_quote(&password)
+            ))
+        ));
+    }
 
     let unit_contents = render_docker_systemd_unit(
         instance_id,
