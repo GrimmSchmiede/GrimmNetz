@@ -4,6 +4,7 @@ mod keyring_store;
 mod mc_ping;
 mod provisioning;
 mod ssh;
+mod ssh_keys;
 
 use db::{Db, InstanceRecord, ServerRecord};
 use games::GameTemplate;
