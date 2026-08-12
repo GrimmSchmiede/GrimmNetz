@@ -185,7 +185,7 @@ export default function AddServerDialog({ onClose, onCreated }: Props) {
             </ol>
             <div className="nx-modal-row">
               <textarea readOnly value={publicKey} rows={3} style={{ flex: 1, fontFamily: "monospace", fontSize: 11 }} />
-              <button type="button" onClick={() => navigator.clipboard.writeText(publicKey)}>
+              <button type="button" className="nx-copy-btn" onClick={() => navigator.clipboard.writeText(publicKey)}>
                 Kopieren
               </button>
             </div>
