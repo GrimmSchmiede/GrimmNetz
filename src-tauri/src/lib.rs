@@ -1606,7 +1606,13 @@ async fn delete_instance(
     let install_unit_name = format!("grimmnetz-install-{instance_id}");
     let _ = session
         .exec(&format!(
-            "sudo systemctl disable {install_unit_name} 2>/dev/null; \
+            // RemainAfterExit=yes keeps the unit "active" indefinitely even after its ExecStart
+            // process exits - `disable` alone only removes the enablement symlink, it does NOT
+            // stop an active unit, so `stop` has to run first or the unit stays loaded and
+            // "active" in systemd's memory even once its file is gone (confirmed live: exactly
+            // this happened when `stop` was missing from the first version of this fix).
+            "sudo systemctl stop {install_unit_name} 2>/dev/null; \
+             sudo systemctl disable {install_unit_name} 2>/dev/null; \
              sudo rm -f /etc/systemd/system/{install_unit_name}.service"
         ))
         .await;
