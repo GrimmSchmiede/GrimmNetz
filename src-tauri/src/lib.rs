@@ -172,24 +172,35 @@ async fn connect_with_key_or_password(
     known_fingerprint: Option<&str>,
 ) -> Result<ssh::SshSession, String> {
     let key_name = ssh_key_keyring_name(server_id);
+    let mut key_error: Option<String> = None;
     if let Ok(pem) = keyring_store::get_secret(&key_name) {
         if let Ok(keypair) = ssh_keys::load_keypair(&pem) {
-            if let Ok(session) =
-                ssh::SshSession::connect_key(host, port, username, Arc::new(keypair), known_fingerprint).await
-            {
-                return Ok(session);
+            match ssh::SshSession::connect_key(host, port, username, Arc::new(keypair), known_fingerprint).await {
+                Ok(session) => return Ok(session),
+                // Fehler merken: Gibt es für diesen Server gar kein Passwort (reiner Weg-B-Server),
+                // ist dieser Grund für den User die eigentlich hilfreiche Information - nicht das
+                // "Keyring-Eintrag nicht gefunden" der Passwortsuche unten.
+                Err(e) => key_error = Some(e.to_string()),
             }
         }
     }
 
-    let password = keyring_store::get_secret(server_id).map_err(|e| e.to_string())?;
+    let password = match keyring_store::get_secret(server_id) {
+        Ok(p) => p,
+        Err(e) => return Err(key_error.unwrap_or_else(|| e.to_string())),
+    };
     let mut session = ssh::SshSession::connect_password(host, port, username, &password, known_fingerprint)
         .await
         .map_err(|e| e.to_string())?;
 
     if let Ok((_, private_pem, public_line)) = ssh_keys::generate_and_format(server_id) {
-        if session.exec(&ssh_keys::install_command(&public_line, username)).await.is_ok() {
-            let _ = keyring_store::store_secret(&key_name, &private_pem);
+        // `exec` liefert keinen Exit-Code des Remote-Befehls, deshalb prüfen wir den Marker in
+        // der Ausgabe - sonst würde ein fehlgeschlagenes Ausrollen (z.B. volle Platte) als Erfolg
+        // gelten und wir hinterlegten einen Key, der auf dem Server gar nicht existiert.
+        if let Ok(out) = session.exec(&ssh_keys::install_command(&public_line)).await {
+            if out.contains(ssh_keys::INSTALL_SUCCESS_MARKER) {
+                let _ = keyring_store::store_secret(&key_name, &private_pem);
+            }
         }
     }
 
@@ -281,8 +292,11 @@ async fn add_server(state: State<'_, AppState>, input: AddServerInput) -> Result
     let id = uuid::Uuid::new_v4().to_string();
 
     if let Ok((_, private_pem, public_line)) = ssh_keys::generate_and_format(&id) {
-        if session.exec(&ssh_keys::install_command(&public_line, &input.username)).await.is_ok() {
-            let _ = keyring_store::store_secret(&ssh_key_keyring_name(&id), &private_pem);
+        // Marker statt `is_ok()` - siehe `connect_with_key_or_password`.
+        if let Ok(out) = session.exec(&ssh_keys::install_command(&public_line)).await {
+            if out.contains(ssh_keys::INSTALL_SUCCESS_MARKER) {
+                let _ = keyring_store::store_secret(&ssh_key_keyring_name(&id), &private_pem);
+            }
         }
     }
 
@@ -358,16 +372,48 @@ async fn finalize_pending_server(
 ) -> Result<ServerRecord, String> {
     let (username, private_pem) = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
+        // Gleicher Doppel-Eintrag-Schutz wie in `add_server` (Weg A): zwei Einträge auf dieselbe
+        // Host+Port-Kombination führen später z.B. in `discover_instances` zu einer Kollision mit
+        // dem Unique-Constraint der DB.
+        if let Some(existing) = db.find_server_by_host_port(&host, port).map_err(|e| e.to_string())? {
+            if existing.id != server_id {
+                return Err(format!(
+                    "{}:{} ist bereits als \"{}\" eingetragen - Server können nicht doppelt hinzugefügt werden.",
+                    host, port, existing.name
+                ));
+            }
+        }
         let server = db.get_server(&server_id).map_err(|e| e.to_string())?;
         let pem = keyring_store::get_secret(&ssh_key_keyring_name(&server_id)).map_err(|e| e.to_string())?;
         (server.username, pem)
     };
+
+    // Für Weg B liegt kein Passwort vor, mit dem `ensure_passwordless_sudo` den einmaligen
+    // sudo-Prompt beantworten könnte. Als `root` ist das egal (dessen `sudo -n` läuft ohne
+    // Passwort, der Fast-Path in `ensure_passwordless_sudo` greift), für jeden anderen Login-User
+    // würde dagegen jedes `sudo` in `bootstrap_server` still fehlschlagen - deshalb hier ein
+    // klarer Guard statt eines halb provisionierten Servers.
+    if username != "root" {
+        return Err(format!(
+            "Für einen reinen Key-Server (neuer Cloud-Server) wird aktuell der Benutzername \"root\" benötigt - \
+             \"{username}\" funktioniert nicht, weil ohne Passwort kein passwortloses sudo eingerichtet werden kann. \
+             Lege die VM mit dem Standard-Benutzer \"root\" an oder füge den Server über den klassischen Weg mit Passwort hinzu."
+        ));
+    }
+
     let keypair = ssh_keys::load_keypair(&private_pem).map_err(|e| e.to_string())?;
 
     let mut session = ssh::SshSession::connect_key(&host, port, &username, Arc::new(keypair), None)
         .await
         .map_err(|e| e.to_string())?;
     let host_fingerprint = session.host_fingerprint.clone();
+
+    // Konsistent mit `add_server`/`connect_fresh`: prüft (und verifiziert) passwortloses sudo.
+    // Der leere String genügt hier, weil für root der Check `sudo -n true` bereits erfolgreich
+    // ist und die Funktion sofort zurückkehrt, ohne das Passwort zu benutzen.
+    provisioning::ensure_passwordless_sudo(&mut session, &username, "")
+        .await
+        .map_err(|e| e.to_string())?;
 
     provisioning::bootstrap_server(&mut session, timezone.as_deref())
         .await
@@ -416,8 +462,6 @@ async fn enable_firewall(state: State<'_, AppState>, server_id: String) -> Resul
             .ok_or_else(|| "Server hat noch keine IP-Adresse".to_string())?;
         (host, server.port, server.username, server.known_host_fingerprint)
     };
-    let password = keyring_store::get_secret(&server_id).map_err(|e| e.to_string())?;
-
     let job_id = {
         let mut guard = acquire_session(&state, &server_id).await?;
         let session = guard.as_mut().unwrap();
@@ -429,7 +473,9 @@ async fn enable_firewall(state: State<'_, AppState>, server_id: String) -> Resul
 
     // Verify with a brand-new connection (never the pooled one, which might just be reusing
     // an already-open TCP socket that predates the firewall change) that we're not locked out.
-    match ssh::SshSession::connect_password(&host, port, &username, &password, known_fingerprint.as_deref()).await {
+    // Über den zentralen Weg, damit das auch für reine Key-Server (Weg B, kein Passwort im
+    // Keyring) funktioniert.
+    match connect_with_key_or_password(&host, port, &username, &server_id, known_fingerprint.as_deref()).await {
         Ok(mut fresh) => {
             let _ = provisioning::cancel_firewall_rollback(&mut fresh, &job_id).await;
             Ok(())
@@ -455,17 +501,31 @@ async fn update_server(
     username: String,
     password: Option<String>,
 ) -> Result<ServerRecord, String> {
-    let effective_password = match &password {
-        Some(p) if !p.is_empty() => p.clone(),
-        _ => keyring_store::get_secret(&server_id).map_err(|e| e.to_string())?,
-    };
-
     // Deliberately not checking the pinned fingerprint here - editing and re-saving a server's
     // details is the app's explicit "I trust this host key" action (e.g. after a legitimate
     // server reinstall changed it), same as re-adding it from scratch would.
-    let session = ssh::SshSession::connect_password(&host, port, &username, &effective_password, None)
-        .await
-        .map_err(|e| format!("Verbindung mit den neuen Zugangsdaten fehlgeschlagen: {e}"))?;
+    //
+    // Key-Auth hat Vorrang: Ein reiner Weg-B-Server hat gar kein Passwort im Keyring, wäre also
+    // über den Passwort-Pfad nie editierbar (und hätte damit auch keinen Weg, einen legitim
+    // geänderten Host-Key wieder zu bestätigen).
+    let existing_keypair = keyring_store::get_secret(&ssh_key_keyring_name(&server_id))
+        .ok()
+        .and_then(|pem| ssh_keys::load_keypair(&pem).ok());
+
+    let session = match existing_keypair {
+        Some(keypair) => ssh::SshSession::connect_key(&host, port, &username, Arc::new(keypair), None)
+            .await
+            .map_err(|e| format!("Verbindung mit den neuen Zugangsdaten fehlgeschlagen: {e}"))?,
+        None => {
+            let effective_password = match &password {
+                Some(p) if !p.is_empty() => p.clone(),
+                _ => keyring_store::get_secret(&server_id).map_err(|e| e.to_string())?,
+            };
+            ssh::SshSession::connect_password(&host, port, &username, &effective_password, None)
+                .await
+                .map_err(|e| format!("Verbindung mit den neuen Zugangsdaten fehlgeschlagen: {e}"))?
+        }
+    };
 
     if let Some(p) = &password {
         if !p.is_empty() {
@@ -516,6 +576,9 @@ fn delete_server(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db.delete_server(&id).map_err(|e| e.to_string())?;
     let _ = keyring_store::delete_secret(&id);
+    // Best-effort: Server ohne je erzeugten Key haben hier keinen Eintrag - das Löschen des
+    // Servers darf daran nicht scheitern.
+    let _ = keyring_store::delete_secret(&ssh_key_keyring_name(&id));
     if let Ok(mut pool) = state.ssh_pool.lock() {
         pool.remove(&id);
     }

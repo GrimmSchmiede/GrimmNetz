@@ -28,16 +28,32 @@ pub fn load_keypair(private_pem: &str) -> Result<KeyPair> {
 }
 
 /// Baut die idempotente Shell-Pipeline, die den Public Key in `authorized_keys` des Zielnutzers
-/// einträgt - läuft nach erfolgreichem Passwort-Login über die offene SSH-Session. `grep -qxF`
-/// verhindert Duplikate bei wiederholten Ausroll-Versuchen (z.B. nach einem App-Absturz
-/// zwischen Ausrollen und Speichern des Erfolgsstatus). Die `chmod`-Aufrufe sind nötig, da SSH
-/// Keys in zu offen berechtigten `.ssh`-Verzeichnissen/Dateien ignoriert.
-pub fn install_command(public_line: &str, username: &str) -> String {
-    let home = if username == "root" { "/root".to_string() } else { format!("/home/{username}") };
+/// einträgt - läuft nach erfolgreichem Passwort-Login über die offene SSH-Session als genau
+/// dieser Nutzer, deshalb ist `$HOME` die verlässliche Quelle für das Home-Verzeichnis (statt
+/// `/home/{username}` zu raten) und ein `chown` unnötig (selbst angelegte Dateien gehören dem
+/// Nutzer bereits; ein `chown user:user` würde auf Systemen mit abweichendem Primärgruppennamen
+/// sogar fehlschlagen). Der `sed -i`-Aufruf entfernt zuerst eine eventuell vorhandene ältere
+/// GrimmNetz-Zeile desselben Servers (Kommentar `grimmnetz-{server_id}`), damit bei einer
+/// Neu-Generierung des Keys kein alter, nicht mehr widerrufbarer Public Key auf dem Server
+/// zurückbleibt; `grep -qxF` verhindert zusätzlich Duplikate exakt gleicher Zeilen. Die
+/// `chmod`-Aufrufe sind nötig, da SSH Keys in zu offen berechtigten `.ssh`-Verzeichnissen/
+/// Dateien ignoriert. Der abschließende Marker `GRIMMNETZ_KEY_INSTALLED` wird nur ausgegeben,
+/// wenn die gesamte Kette erfolgreich war - `exec` liefert keinen Exit-Code, der Aufrufer prüft
+/// deshalb auf diesen Marker in der Ausgabe.
+pub fn install_command(public_line: &str) -> String {
     let quoted = crate::games::shell_single_quote(public_line);
+    // Kommentarfeld der Public-Key-Zeile (`grimmnetz-{server_id}`) - identifiziert die von
+    // GrimmNetz verwaltete Zeile in `authorized_keys`.
+    let comment = public_line.split_whitespace().last().unwrap_or_default();
+    let sed_script = crate::games::shell_single_quote(&format!("\\@ {comment}$@d"));
     format!(
-        "mkdir -p {home}/.ssh && chmod 700 {home}/.ssh && \
-         (grep -qxF {quoted} {home}/.ssh/authorized_keys 2>/dev/null || echo {quoted} >> {home}/.ssh/authorized_keys) && \
-         chmod 600 {home}/.ssh/authorized_keys && chown -R {username}:{username} {home}/.ssh"
+        "mkdir -p \"$HOME/.ssh\" && chmod 700 \"$HOME/.ssh\" && \
+         touch \"$HOME/.ssh/authorized_keys\" && \
+         sed -i {sed_script} \"$HOME/.ssh/authorized_keys\" && \
+         (grep -qxF {quoted} \"$HOME/.ssh/authorized_keys\" 2>/dev/null || echo {quoted} >> \"$HOME/.ssh/authorized_keys\") && \
+         chmod 600 \"$HOME/.ssh/authorized_keys\" && echo GRIMMNETZ_KEY_INSTALLED"
     )
 }
+
+/// Marker, den `install_command` bei Erfolg ausgibt - siehe dort.
+pub const INSTALL_SUCCESS_MARKER: &str = "GRIMMNETZ_KEY_INSTALLED";
