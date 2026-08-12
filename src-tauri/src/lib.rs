@@ -158,6 +158,50 @@ fn ssh_key_keyring_name(server_id: &str) -> String {
     format!("{server_id}::ssh_key")
 }
 
+/// Cloud-Provider (u.a. Hetzner) markieren ein frisch vergebenes/zurückgesetztes root-Passwort
+/// als sofort abgelaufen - sshd/PAM verweigert dann JEDEN nicht-interaktiven Befehl mit
+/// "Password change required but no TTY available", nicht nur `sudo` (siehe
+/// `ssh::SshSession::change_expired_password`-Doku). Prüft das per günstigem Test-Exec direkt
+/// nach dem Passwort-Login und spielt bei Bedarf automatisiert den erzwungenen Passwortwechsel
+/// durch - mit einem intern generierten, dem User nie gezeigten Zufallspasswort, da GrimmNetz
+/// ab dem nächsten Connect ohnehin auf Key-Auth wechselt. Gibt bei einer Rotation die neue
+/// Session UND das neue Passwort zurück, damit der Aufrufer es im Keyring aktualisieren kann.
+async fn ensure_password_current(
+    mut session: ssh::SshSession,
+    host: &str,
+    port: u16,
+    username: &str,
+    password: &str,
+    known_fingerprint: Option<&str>,
+) -> Result<(ssh::SshSession, Option<String>), String> {
+    // sshd/PAM verweigert bei einem abgelaufenen Passwort nicht zwingend mit einem SSH-Protokoll-
+    // Fehler - die Warnung kommt oft als ganz normale (Extended-Data-)Ausgabe des Befehls selbst
+    // zurück, `exec` liefert also trotzdem `Ok(...)`. Deshalb den Text sowohl im Erfolgs- als
+    // auch im Fehlerfall prüfen, statt uns auf `Err` allein zu verlassen.
+    let needs_change = |text: &str| text.to_lowercase().contains("password change required");
+    let probe = session.exec("true").await;
+    let is_expired = match &probe {
+        Ok(out) => needs_change(out),
+        Err(e) => needs_change(&e.to_string()),
+    };
+    if !is_expired {
+        return probe.map(|_| (session, None)).map_err(|e| e.to_string());
+    }
+
+    let new_password = uuid::Uuid::new_v4().to_string();
+    session
+        .change_expired_password(password, &new_password)
+        .await
+        .map_err(|e| e.to_string())?;
+    // Der Server trennt die Verbindung nach einem erzwungenen Passwortwechsel ohnehin -
+    // frischer Connect mit dem neuen Passwort statt die alte Session weiterzuverwenden.
+    drop(session);
+    let fresh = ssh::SshSession::connect_password(host, port, username, &new_password, known_fingerprint)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok((fresh, Some(new_password)))
+}
+
 /// Zentraler Verbindungsweg für alle Server: versucht zuerst SSH-Key-Auth (falls ein Key für
 /// diesen Server im OS-Keyring liegt), fällt bei Fehlschlag oder fehlendem Key auf Passwort
 /// zurück. Nach einem erfolgreichen Passwort-Login wird - falls noch kein Key existiert oder
@@ -189,9 +233,14 @@ async fn connect_with_key_or_password(
         Ok(p) => p,
         Err(e) => return Err(key_error.unwrap_or_else(|| e.to_string())),
     };
-    let mut session = ssh::SshSession::connect_password(host, port, username, &password, known_fingerprint)
+    let session = ssh::SshSession::connect_password(host, port, username, &password, known_fingerprint)
         .await
         .map_err(|e| e.to_string())?;
+    let (mut session, rotated_password) =
+        ensure_password_current(session, host, port, username, &password, known_fingerprint).await?;
+    if let Some(new_password) = &rotated_password {
+        let _ = keyring_store::store_secret(server_id, new_password);
+    }
 
     if let Ok((_, private_pem, public_line)) = ssh_keys::generate_and_format(server_id) {
         // `exec` liefert keinen Exit-Code des Remote-Befehls, deshalb prüfen wir den Marker in
@@ -278,11 +327,14 @@ async fn add_server(state: State<'_, AppState>, input: AddServerInput) -> Result
         }
     }
 
-    let mut session = ssh::SshSession::connect_password(&input.host, input.port, &input.username, &input.password, None)
+    let session = ssh::SshSession::connect_password(&input.host, input.port, &input.username, &input.password, None)
         .await
         .map_err(|e| e.to_string())?;
     let host_fingerprint = session.host_fingerprint.clone();
-    provisioning::ensure_passwordless_sudo(&mut session, &input.username, &input.password)
+    let (mut session, rotated_password) =
+        ensure_password_current(session, &input.host, input.port, &input.username, &input.password, Some(&host_fingerprint)).await?;
+    let effective_password = rotated_password.unwrap_or_else(|| input.password.clone());
+    provisioning::ensure_passwordless_sudo(&mut session, &input.username, &effective_password)
         .await
         .map_err(|e| e.to_string())?;
     provisioning::bootstrap_server(&mut session, input.timezone.as_deref())
@@ -309,7 +361,7 @@ async fn add_server(state: State<'_, AppState>, input: AddServerInput) -> Result
         if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
     };
 
-    keyring_store::store_secret(&id, &input.password).map_err(|e| e.to_string())?;
+    keyring_store::store_secret(&id, &effective_password).map_err(|e| e.to_string())?;
 
     let record = ServerRecord {
         id,
