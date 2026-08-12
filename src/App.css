@@ -461,6 +461,35 @@
   padding: 6px 12px;
 }
 
+.nx-tab-row {
+  display: flex;
+  gap: 6px;
+  background: var(--nx-panel-alt);
+  border-radius: 8px;
+  padding: 4px;
+}
+
+.nx-tab-row .nx-tab,
+.nx-tab-row .nx-tab-active {
+  flex: 1;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  background: transparent;
+  color: var(--nx-text-muted);
+}
+
+.nx-tab-row .nx-tab:hover {
+  color: var(--nx-text);
+}
+
+.nx-tab-row .nx-tab-active {
+  background: var(--nx-accent);
+  color: #fff;
+}
+
 .nx-store-modal {
   width: 560px;
 }
