@@ -59,8 +59,9 @@ GrimmNetz ist eine ressourcenschonende, plattformübergreifende Desktop-App, die
 Wir glauben an absolute Datensouveränität.
 
 1. **Zero-Cloud-Storage:** Alle Verbindungsdaten verbleiben zu 100 % lokal.
-2. **OS-Keyring-Integration:** Passwörter werden sicher im OS-eigenen Tresor gespeichert.
-3. **Keine Root-Rechte für Spiele:** Alle Gameserver laufen strikt unter einem isolierten Nutzer.
+2. **OS-Keyring-Integration:** Passwörter und SSH-Schlüssel werden sicher im OS-eigenen Tresor gespeichert, nie auf Disk.
+3. **SSH-Key-Auth bevorzugt:** Jeder Server bekommt automatisch sein eigenes ED25519-Schlüsselpaar - Passwort-Login läuft nur einmalig beim Ersteinrichten, danach ausschließlich Key-Auth.
+4. **Keine Root-Rechte für Spiele:** Alle Gameserver laufen strikt unter einem isolierten Nutzer.
 
 ---
 
@@ -139,7 +140,7 @@ Bewusst zurückgestellte, aber sinnvolle Verbesserungen ohne laufende Kosten - k
 - **CI-Validierung der generierten systemd-Units:** `systemd-analyze verify` gegen die von `render_systemd_unit` erzeugten Dateien in GitHub Actions laufen lassen, um Syntaxfehler bei neuen Spiele-Templates automatisch abzufangen - ohne echte SteamCMD-Downloads in CI zu brauchen
 - **Desktop-Benachrichtigungen:** Meldung bei Server-Absturz oder erreichtem RAM-Limit, statt es nur beim aktiven Draufschauen zu bemerken
 - **Theme-Wechsler:** Echter Light-Mode bzw. Deep-Black-Variante für OLED-Monitore, zusätzlich zum aktuellen Dark-Theme
-- **SSH-Schlüsselverwaltung:** Aktuell nur Passwort-Login - Key-basierte Authentifizierung wäre ein eigenes, größeres Feature
+- **Verwaisten Keyring-Eintrag bei fehlgeschlagener Server-Einrichtung aufräumen:** Schlägt `add_server` nach einem automatischen Passwort-Wechsel (siehe Security-Sektion) aber vor dem finalen Speichern fehl, bleibt ein ungenutzter SSH-Key im OS-Keyring zurück - reiner Speicherplatz-Leak, keine Sicherheitslücke, aber sollte aufgeräumt werden
 - **Spieler-/Welt-Status anzeigen:** Aktuell nur CPU/RAM/Online-Status pro Instanz sichtbar, keine Anzeige wer online ist oder welche Welt/Save aktiv ist
 - **Geplanten Neustart/Stop abbrechen:** Läuft gerade ein Countdown (Verwalten-Tab), gibt es aktuell keine Möglichkeit ihn zu stoppen - ein Abbrechen-Button mit passender Server-Ansage ("Neustart wurde abgebrochen") wäre sinnvoll
 - **Öffentliche Server-Listung (Factorio):** Aktuell fest auf `visibility.public: false` (nur LAN/Direktverbindung) - öffentliche Listung bräuchte Factorio.com-Account/Token-Verwaltung und verschachtelte Config-Felder, die der aktuelle Config-Editor (nur flache Top-Level-Keys) noch nicht unterstützt

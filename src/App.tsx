@@ -562,7 +562,7 @@ function App() {
                       style={{ background: s ? "var(--nx-success)" : "var(--nx-warning)" }}
                     />
                   </div>
-                  <div className="nx-server-ip">{server.host}</div>
+                  <div className="nx-server-ip">{server.host ?? "Warte auf IP…"}</div>
                 </div>
                 <div style={{ position: "relative" }}>
                   <button
@@ -619,7 +619,7 @@ function App() {
               <div className="nx-server-header-info">
                 <h1>{selectedServer.name}</h1>
                 <p>
-                  {selectedServer.host}:{selectedServer.port}
+                  {selectedServer.host ?? "Warte auf IP…"}:{selectedServer.port}
                   {selectedServer.os_info ? ` · ${selectedServer.os_info}` : ""}
                 </p>
               </div>

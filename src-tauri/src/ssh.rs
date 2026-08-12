@@ -1,9 +1,33 @@
 use anyhow::{anyhow, Result};
-use russh::client::{self, Handle};
-use russh::ChannelMsg;
+use russh::client::{self, Handle, Msg};
+use russh::{Channel, ChannelMsg};
 use russh_keys::key;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
+
+/// Pause im Remote-Output, ab der ein Prompt als "fertig ausgegeben" gilt.
+const QUIET_GAP: Duration = Duration::from_millis(700);
+
+/// Obergrenze für den kompletten automatisierten Passwortwechsel - `wait_for_quiet` allein ist
+/// unbegrenzt (ein dauerhaft nachplätschernder Banner würde die Pause nie erreichen), und das
+/// Ganze läuft unter dem Per-Server-Verbindungslock.
+const PASSWORD_CHANGE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Drains a channel's output until there's a pause of `QUIET_GAP` with no new data - used to
+/// detect "the remote side just finished printing a prompt and is waiting for input" without
+/// having to match the prompt's exact (locale-dependent) text. Returns once the pause is
+/// observed, or immediately if the channel closes.
+async fn wait_for_quiet(channel: &mut Channel<Msg>, transcript: &mut Vec<u8>) -> Result<()> {
+    loop {
+        match tokio::time::timeout(QUIET_GAP, channel.wait()).await {
+            Ok(Some(ChannelMsg::Data { data })) => transcript.extend_from_slice(&data),
+            Ok(Some(ChannelMsg::ExtendedData { data, .. })) => transcript.extend_from_slice(&data),
+            Ok(Some(ChannelMsg::Eof)) | Ok(Some(ChannelMsg::Close)) | Ok(None) => return Ok(()),
+            Ok(Some(_)) => {}
+            Err(_) => return Ok(()), // timeout elapsed with no new data - prompt is ready
+        }
+    }
+}
 
 /// A hung TCP connect/handshake (e.g. remote not reachable yet, firewall dropping packets)
 /// would otherwise block forever - and since connections are held behind a per-server lock,
@@ -50,12 +74,40 @@ pub struct SshSession {
     pub host_fingerprint: String,
 }
 
+enum AuthMethod {
+    Password(String),
+    PublicKey(Arc<key::KeyPair>),
+}
+
 impl SshSession {
     pub async fn connect_password(
         host: &str,
         port: u16,
         username: &str,
         password: &str,
+        expected_fingerprint: Option<&str>,
+    ) -> Result<Self> {
+        Self::connect(host, port, username, AuthMethod::Password(password.to_string()), expected_fingerprint).await
+    }
+
+    /// Wie `connect_password`, nur per SSH-Public-Key-Authentifizierung statt Passwort - siehe
+    /// `ssh_keys.rs` für Erzeugung/Laden des Schlüsselpaars. Wird von `lib.rs` immer zuerst
+    /// versucht, wenn für einen Server ein Key im OS-Keyring hinterlegt ist.
+    pub async fn connect_key(
+        host: &str,
+        port: u16,
+        username: &str,
+        keypair: Arc<key::KeyPair>,
+        expected_fingerprint: Option<&str>,
+    ) -> Result<Self> {
+        Self::connect(host, port, username, AuthMethod::PublicKey(keypair), expected_fingerprint).await
+    }
+
+    async fn connect(
+        host: &str,
+        port: u16,
+        username: &str,
+        auth: AuthMethod,
         expected_fingerprint: Option<&str>,
     ) -> Result<Self> {
         // Fresh TCP connects sometimes get an immediate "connection refused" through
@@ -69,7 +121,7 @@ impl SshSession {
             }
             match tokio::time::timeout(
                 CONNECT_TIMEOUT,
-                Self::connect_password_inner(host, port, username, password, expected_fingerprint),
+                Self::connect_inner(host, port, username, &auth, expected_fingerprint),
             )
             .await
             {
@@ -90,11 +142,11 @@ impl SshSession {
         Err(last_err.unwrap_or_else(|| anyhow!("Verbindung fehlgeschlagen")))
     }
 
-    async fn connect_password_inner(
+    async fn connect_inner(
         host: &str,
         port: u16,
         username: &str,
-        password: &str,
+        auth: &AuthMethod,
         expected_fingerprint: Option<&str>,
     ) -> Result<Self> {
         let observed = Arc::new(StdMutex::new(None));
@@ -120,7 +172,10 @@ impl SshSession {
                 return Err(e.into());
             }
         };
-        let authenticated = handle.authenticate_password(username, password).await?;
+        let authenticated = match auth {
+            AuthMethod::Password(password) => handle.authenticate_password(username, password).await?,
+            AuthMethod::PublicKey(keypair) => handle.authenticate_publickey(username, keypair.clone()).await?,
+        };
         if !authenticated {
             return Err(anyhow!("SSH-Authentifizierung fehlgeschlagen"));
         }
@@ -226,6 +281,102 @@ impl SshSession {
             }
         }
         Ok(String::from_utf8_lossy(&output).to_string())
+    }
+
+    /// Cloud-Provider (u.a. Hetzner) markieren ein frisch vergebenes/zurückgesetztes
+    /// root-Passwort als sofort abgelaufen - jeder nicht-interaktive Befehl (auch ein simpler
+    /// `exec`) wird dann von sshd/PAM mit "Password change required but no TTY available"
+    /// verweigert, nicht nur `sudo`. Es gibt keinen Weg, das ohne eine echte interaktive
+    /// Terminal-Sitzung zu umgehen, also spielen wir hier den erzwungenen `passwd`-Dialog
+    /// automatisiert durch: PTY anfordern, Shell starten, und die Prompts zeitbasiert (Pause im
+    /// Output = nächster Prompt ist fertig) statt rein textbasiert bedienen.
+    /// Ein administrator-erzwungener Wechsel (der hier vorliegende Fall) fragt nur "Neues
+    /// Passwort" + "Wiederholung", KEIN "aktuelles Passwort" - anders als ein freiwilliger
+    /// `passwd`-Aufruf. Da sich das je nach PAM-Konfiguration/Distro unterscheiden kann, wird die
+    /// erste Ausgabe kurz auf "current"/"aktuell" geprüft, um zu entscheiden, ob das aktuelle
+    /// Passwort zusätzlich gesendet werden muss - einziger Textbezug hier, alles andere bleibt
+    /// zeitbasiert.
+    pub async fn change_expired_password(&mut self, current_password: &str, new_password: &str) -> Result<()> {
+        // Entfernt beide Klartext-Passwörter aus einem Transcript, bevor es in einer Fehlermeldung
+        // (und damit bis in die UI) landet - bei einem Prompt-Versatz kann eine interaktive Shell
+        // eine gesendete Zeile echoen.
+        let redact = |text: &str| {
+            let mut out = text.to_string();
+            for secret in [new_password, current_password] {
+                if !secret.is_empty() {
+                    out = out.replace(secret, "[REDACTED]");
+                }
+            }
+            out
+        };
+        let attempt = async {
+        let mut channel = self.handle.channel_open_session().await?;
+        channel
+            .request_pty(false, "xterm", 80, 24, 0, 0, &[])
+            .await
+            .map_err(|e| anyhow!("PTY-Anforderung fehlgeschlagen: {e}"))?;
+        channel
+            .request_shell(false)
+            .await
+            .map_err(|e| anyhow!("Shell-Start fehlgeschlagen: {e}"))?;
+
+        let mut transcript = Vec::new();
+        wait_for_quiet(&mut channel, &mut transcript).await?;
+        // Momentaufnahme AUSSCHLIESSLICH der Bytes vor der ersten gesendeten Zeile: die
+        // Entscheidung fällt genau einmal und wird später nicht auf dem weiterwachsenden
+        // Transcript neu ausgewertet.
+        let pre = String::from_utf8_lossy(&transcript).to_lowercase();
+        let asks_current_first = pre.contains("current") || pre.contains("aktuell");
+        drop(pre);
+
+        let lines: &[&str] = if asks_current_first {
+            &[current_password, new_password, new_password]
+        } else {
+            &[new_password, new_password]
+        };
+        for (i, line) in lines.iter().enumerate() {
+            if i > 0 {
+                // Wartet auf eine Sendepause im Output (der nächste Prompt ist fertig ausgegeben).
+                wait_for_quiet(&mut channel, &mut transcript).await?;
+            }
+            channel
+                .data(format!("{line}\n").as_bytes())
+                .await
+                .map_err(|e| anyhow!("Eingabe konnte nicht gesendet werden: {e}"))?;
+        }
+        // Letzte Ausgabe (Erfolg/Fehler-Meldung von `passwd`) noch abwarten, dann die Sitzung
+        // schließen - der Server trennt die Verbindung nach einem erzwungenen Passwortwechsel
+        // ohnehin selbst, ein neuer Connect mit dem neuen Passwort folgt direkt danach.
+        let _ = wait_for_quiet(&mut channel, &mut transcript).await;
+        // Auch die Erfolgsprüfung läuft auf dem redigierten Text: enthielte ein Passwort zufällig
+        // einen dieser Teilstrings, würde ein Echo sonst fälschlich als Erfolg gelten.
+        let output = redact(&String::from_utf8_lossy(&transcript)).to_lowercase();
+        if output.contains("passwd: password updated successfully")
+            // `passwd`-Präfix wie oben, nur die auf PAM-Systemen übliche Formulierung.
+            || output.contains("passwd: all authentication tokens updated successfully")
+            || output.contains("passwort erfolgreich")
+        {
+            return Ok(());
+        }
+        if output.contains("bad password")
+            || output.contains("password unchanged")
+            || output.contains("authentication token manipulation error")
+        {
+            return Err(anyhow!(
+                "Erzwungener Passwortwechsel fehlgeschlagen - Server-Antwort: {}",
+                redact(String::from_utf8_lossy(&transcript).trim())
+            ));
+        }
+        // Kein eindeutiger Erfolgs-/Fehlertext gefunden (unbekannte PAM-Meldung) - optimistisch
+        // weitermachen, der anschließende Connect mit dem neuen Passwort ist der eigentliche Test.
+        Ok(())
+        };
+        match tokio::time::timeout(PASSWORD_CHANGE_TIMEOUT, attempt).await {
+            Ok(result) => result,
+            Err(_) => Err(anyhow!(
+                "Zeitüberschreitung beim automatischen Passwortwechsel (Server antwortet nicht wie erwartet)"
+            )),
+        }
     }
 
     /// Runs a (potentially long-lived / follow-mode) command, invoking `on_line` for every
