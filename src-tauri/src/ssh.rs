@@ -50,12 +50,40 @@ pub struct SshSession {
     pub host_fingerprint: String,
 }
 
+enum AuthMethod {
+    Password(String),
+    PublicKey(Arc<key::KeyPair>),
+}
+
 impl SshSession {
     pub async fn connect_password(
         host: &str,
         port: u16,
         username: &str,
         password: &str,
+        expected_fingerprint: Option<&str>,
+    ) -> Result<Self> {
+        Self::connect(host, port, username, AuthMethod::Password(password.to_string()), expected_fingerprint).await
+    }
+
+    /// Wie `connect_password`, nur per SSH-Public-Key-Authentifizierung statt Passwort - siehe
+    /// `ssh_keys.rs` für Erzeugung/Laden des Schlüsselpaars. Wird von `lib.rs` immer zuerst
+    /// versucht, wenn für einen Server ein Key im OS-Keyring hinterlegt ist.
+    pub async fn connect_key(
+        host: &str,
+        port: u16,
+        username: &str,
+        keypair: Arc<key::KeyPair>,
+        expected_fingerprint: Option<&str>,
+    ) -> Result<Self> {
+        Self::connect(host, port, username, AuthMethod::PublicKey(keypair), expected_fingerprint).await
+    }
+
+    async fn connect(
+        host: &str,
+        port: u16,
+        username: &str,
+        auth: AuthMethod,
         expected_fingerprint: Option<&str>,
     ) -> Result<Self> {
         // Fresh TCP connects sometimes get an immediate "connection refused" through
@@ -69,7 +97,7 @@ impl SshSession {
             }
             match tokio::time::timeout(
                 CONNECT_TIMEOUT,
-                Self::connect_password_inner(host, port, username, password, expected_fingerprint),
+                Self::connect_inner(host, port, username, &auth, expected_fingerprint),
             )
             .await
             {
@@ -90,11 +118,11 @@ impl SshSession {
         Err(last_err.unwrap_or_else(|| anyhow!("Verbindung fehlgeschlagen")))
     }
 
-    async fn connect_password_inner(
+    async fn connect_inner(
         host: &str,
         port: u16,
         username: &str,
-        password: &str,
+        auth: &AuthMethod,
         expected_fingerprint: Option<&str>,
     ) -> Result<Self> {
         let observed = Arc::new(StdMutex::new(None));
@@ -120,7 +148,10 @@ impl SshSession {
                 return Err(e.into());
             }
         };
-        let authenticated = handle.authenticate_password(username, password).await?;
+        let authenticated = match auth {
+            AuthMethod::Password(password) => handle.authenticate_password(username, password).await?,
+            AuthMethod::PublicKey(keypair) => handle.authenticate_publickey(username, keypair.clone()).await?,
+        };
         if !authenticated {
             return Err(anyhow!("SSH-Authentifizierung fehlgeschlagen"));
         }
