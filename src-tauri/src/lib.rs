@@ -1598,6 +1598,22 @@ async fn delete_instance(
         ))
         .await
         .map_err(|e| e.to_string())?;
+    // The install-tracking unit (grimmnetz-install-<id>, RemainAfterExit=yes) otherwise stays
+    // loaded forever as "active exited" - a real gap found live during Task 8: the game unit and
+    // instance directory were cleaned up correctly, but this one was silently left behind on
+    // every single deinstall. Best-effort: a missing install unit (e.g. instance was manually
+    // imported via "Vorhandene Server suchen") is not an error.
+    let install_unit_name = format!("grimmnetz-install-{instance_id}");
+    let _ = session
+        .exec(&format!(
+            "sudo systemctl disable {install_unit_name} 2>/dev/null; \
+             sudo rm -f /etc/systemd/system/{install_unit_name}.service"
+        ))
+        .await;
+    // Best-effort: a docker-based install that crashed before its ExecStartPre ever ran (or
+    // between crash-loop restarts) can leave a stopped container behind that --rm never got to
+    // clean up - harmless either way if this game wasn't docker-based (no matching container).
+    let _ = session.exec(&format!("sudo docker rm -f {unit_name} 2>/dev/null")).await;
     session.exec("sudo systemctl daemon-reload").await.map_err(|e| e.to_string())?;
     session
         .exec(&format!("sudo rm -rf {install_path}"))
