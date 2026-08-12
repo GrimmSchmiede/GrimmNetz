@@ -139,3 +139,5 @@ Bewusst zurückgestellte, aber sinnvolle Verbesserungen ohne laufende Kosten - k
 - **Desktop-Benachrichtigungen:** Meldung bei Server-Absturz oder erreichtem RAM-Limit, statt es nur beim aktiven Draufschauen zu bemerken
 - **Theme-Wechsler:** Echter Light-Mode bzw. Deep-Black-Variante für OLED-Monitore, zusätzlich zum aktuellen Dark-Theme
 - **SSH-Schlüsselverwaltung:** Aktuell nur Passwort-Login - Key-basierte Authentifizierung wäre ein eigenes, größeres Feature
+- **Spieler-/Welt-Status anzeigen:** Aktuell nur CPU/RAM/Online-Status pro Instanz sichtbar, keine Anzeige wer online ist oder welche Welt/Save aktiv ist
+- **Geplanten Neustart/Stop abbrechen:** Läuft gerade ein Countdown (Verwalten-Tab), gibt es aktuell keine Möglichkeit ihn zu stoppen - ein Abbrechen-Button mit passender Server-Ansage ("Neustart wurde abgebrochen") wäre sinnvoll
