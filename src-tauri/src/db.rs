@@ -45,7 +45,7 @@ impl Db {
             CREATE TABLE IF NOT EXISTS servers (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
-                host TEXT NOT NULL,
+                host TEXT,
                 port INTEGER NOT NULL DEFAULT 22,
                 username TEXT NOT NULL,
                 auth_method TEXT NOT NULL, -- 'password' | 'key'
