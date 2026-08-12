@@ -149,6 +149,13 @@ impl Db {
         Ok(())
     }
 
+    /// Trägt die beim `finalize_pending_server`-Aufruf ermittelte OS-Info (z.B. "Ubuntu 24.04
+    /// LTS") für einen per Weg B angelegten Server nach.
+    pub fn set_os_info(&self, id: &str, os_info: &str) -> rusqlite::Result<()> {
+        self.conn.execute("UPDATE servers SET os_info = ?1 WHERE id = ?2", params![os_info, id])?;
+        Ok(())
+    }
+
     /// Same host+port already added? Reconnecting to a server you already manage under a
     /// second entry causes real damage further down the line (e.g. `discover_instances`
     /// re-inserting the same already-known instance under a different server_id and hitting

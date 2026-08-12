@@ -312,6 +312,85 @@ async fn add_server(state: State<'_, AppState>, input: AddServerInput) -> Result
     Ok(record)
 }
 
+#[derive(Serialize)]
+pub struct PendingServer {
+    pub server_id: String,
+    pub public_key: String,
+}
+
+/// Modul A, Weg B: generiert einen Key und legt einen unvollständigen Server-Eintrag (ohne
+/// Host) an, bevor die VM beim Provider überhaupt existiert - für Cloud-Server, bei denen der
+/// User den Public Key direkt beim Anlegen der VM im Provider-Panel hinterlegt (z.B. Hetzners
+/// "SSH-Key hinzufügen"-Feld). Umgeht damit Provider, die beim ersten Passwort-Login eine
+/// Passwortänderung erzwingen (siehe ssh_keys.rs/connect_with_key_or_password-Doku).
+#[tauri::command]
+async fn prepare_key_only_server(state: State<'_, AppState>, name: String, username: String) -> Result<PendingServer, String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let (_, private_pem, public_line) = ssh_keys::generate_and_format(&id).map_err(|e| e.to_string())?;
+    keyring_store::store_secret(&ssh_key_keyring_name(&id), &private_pem).map_err(|e| e.to_string())?;
+
+    let record = ServerRecord {
+        id: id.clone(),
+        name,
+        host: None,
+        port: 22,
+        username,
+        os_info: None,
+        known_host_fingerprint: None,
+    };
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.insert_server(&record).map_err(|e| e.to_string())?;
+
+    Ok(PendingServer { server_id: id, public_key: public_line })
+}
+
+/// Modul A, Weg B: erste tatsächliche Verbindung, sobald die VM existiert und der User die IP
+/// eingetragen hat - verbindet per Key (kein Passwort im Spiel), provisioniert wie beim
+/// klassischen Weg A (gameserver-User, Basis-Abhängigkeiten) und trägt Host/Port + OS-Info
+/// nach.
+#[tauri::command]
+async fn finalize_pending_server(
+    state: State<'_, AppState>,
+    server_id: String,
+    host: String,
+    port: u16,
+    timezone: Option<String>,
+) -> Result<ServerRecord, String> {
+    let (username, private_pem) = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let server = db.get_server(&server_id).map_err(|e| e.to_string())?;
+        let pem = keyring_store::get_secret(&ssh_key_keyring_name(&server_id)).map_err(|e| e.to_string())?;
+        (server.username, pem)
+    };
+    let keypair = ssh_keys::load_keypair(&private_pem).map_err(|e| e.to_string())?;
+
+    let mut session = ssh::SshSession::connect_key(&host, port, &username, Arc::new(keypair), None)
+        .await
+        .map_err(|e| e.to_string())?;
+    let host_fingerprint = session.host_fingerprint.clone();
+
+    provisioning::bootstrap_server(&mut session, timezone.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let os_raw = session
+        .exec("grep PRETTY_NAME /etc/os-release | cut -d'\"' -f2")
+        .await
+        .unwrap_or_default();
+    let os_info = {
+        let trimmed = os_raw.trim();
+        if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+    };
+
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.set_host(&server_id, &host, port).map_err(|e| e.to_string())?;
+    db.set_host_fingerprint(&server_id, &host_fingerprint).map_err(|e| e.to_string())?;
+    if let Some(info) = &os_info {
+        db.set_os_info(&server_id, info).map_err(|e| e.to_string())?;
+    }
+    db.get_server(&server_id).map_err(|e| e.to_string())
+}
+
 /// Module A: checks whether a supported firewall is currently active on the server - called
 /// right after a server is added so the UI can prompt "your server is unprotected, want to
 /// turn a firewall on?" for the common case of a brand-new VPS with no local firewall at all.
@@ -2317,6 +2396,8 @@ pub fn run() {
             quit_app,
             get_local_system_stats,
             add_server,
+            prepare_key_only_server,
+            finalize_pending_server,
             check_firewall_active,
             enable_firewall,
             update_server,
