@@ -154,6 +154,48 @@ pub struct AddServerInput {
     pub timezone: Option<String>,
 }
 
+fn ssh_key_keyring_name(server_id: &str) -> String {
+    format!("{server_id}::ssh_key")
+}
+
+/// Zentraler Verbindungsweg für alle Server: versucht zuerst SSH-Key-Auth (falls ein Key für
+/// diesen Server im OS-Keyring liegt), fällt bei Fehlschlag oder fehlendem Key auf Passwort
+/// zurück. Nach einem erfolgreichen Passwort-Login wird - falls noch kein Key existiert oder
+/// der vorhandene gerade fehlgeschlagen ist (z.B. auf dem Server gelöscht) - automatisch ein
+/// (neuer) Key generiert und in `authorized_keys` ausgerollt, damit der nächste Connect wieder
+/// per Key läuft. Best-effort: schlägt das Ausrollen fehl, bleibt die Session trotzdem nutzbar.
+async fn connect_with_key_or_password(
+    host: &str,
+    port: u16,
+    username: &str,
+    server_id: &str,
+    known_fingerprint: Option<&str>,
+) -> Result<ssh::SshSession, String> {
+    let key_name = ssh_key_keyring_name(server_id);
+    if let Ok(pem) = keyring_store::get_secret(&key_name) {
+        if let Ok(keypair) = ssh_keys::load_keypair(&pem) {
+            if let Ok(session) =
+                ssh::SshSession::connect_key(host, port, username, Arc::new(keypair), known_fingerprint).await
+            {
+                return Ok(session);
+            }
+        }
+    }
+
+    let password = keyring_store::get_secret(server_id).map_err(|e| e.to_string())?;
+    let mut session = ssh::SshSession::connect_password(host, port, username, &password, known_fingerprint)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if let Ok((_, private_pem, public_line)) = ssh_keys::generate_and_format(server_id) {
+        if session.exec(&ssh_keys::install_command(&public_line, username)).await.is_ok() {
+            let _ = keyring_store::store_secret(&key_name, &private_pem);
+        }
+    }
+
+    Ok(session)
+}
+
 /// Establishes a brand-new authenticated SSH session for a stored server, looking up
 /// host/port/username from the DB and the password from the OS keyring, and makes sure
 /// passwordless sudo is set up (self-healing for servers added before that existed).
@@ -162,29 +204,30 @@ async fn connect_fresh(state: &State<'_, AppState>, server_id: &str) -> Result<s
         let db = state.db.lock().map_err(|e| e.to_string())?;
         db.get_server(server_id).map_err(|e| e.to_string())?
     };
-    let password = keyring_store::get_secret(server_id).map_err(|e| e.to_string())?;
     let host = server
         .host
         .as_deref()
-        .ok_or_else(|| "Server hat noch keine IP-Adresse".to_string())?;
-    let mut session = ssh::SshSession::connect_password(
+        .ok_or_else(|| "Server hat noch keine IP-Adresse - erst in den Server-Einstellungen eintragen.".to_string())?;
+    let mut session = connect_with_key_or_password(
         host,
         server.port,
         &server.username,
-        &password,
+        server_id,
         server.known_host_fingerprint.as_deref(),
     )
-    .await
-    .map_err(|e| e.to_string())?;
+    .await?;
     // First connect after this server was added (pre-pinning support, or a DB migrated from
     // before host-key pinning existed) - pin whatever key we just saw as the trusted baseline.
     if server.known_host_fingerprint.is_none() {
         let db = state.db.lock().map_err(|e| e.to_string())?;
         let _ = db.set_host_fingerprint(server_id, &session.host_fingerprint);
     }
-    provisioning::ensure_passwordless_sudo(&mut session, &server.username, &password)
-        .await
-        .map_err(|e| e.to_string())?;
+    let password = keyring_store::get_secret(server_id).unwrap_or_default();
+    if !password.is_empty() {
+        provisioning::ensure_passwordless_sudo(&mut session, &server.username, &password)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     Ok(session)
 }
 
@@ -235,6 +278,14 @@ async fn add_server(state: State<'_, AppState>, input: AddServerInput) -> Result
         .await
         .map_err(|e| e.to_string())?;
 
+    let id = uuid::Uuid::new_v4().to_string();
+
+    if let Ok((_, private_pem, public_line)) = ssh_keys::generate_and_format(&id) {
+        if session.exec(&ssh_keys::install_command(&public_line, &input.username)).await.is_ok() {
+            let _ = keyring_store::store_secret(&ssh_key_keyring_name(&id), &private_pem);
+        }
+    }
+
     let os_raw = session
         .exec("grep PRETTY_NAME /etc/os-release | cut -d'\"' -f2")
         .await
@@ -244,7 +295,6 @@ async fn add_server(state: State<'_, AppState>, input: AddServerInput) -> Result
         if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
     };
 
-    let id = uuid::Uuid::new_v4().to_string();
     keyring_store::store_secret(&id, &input.password).map_err(|e| e.to_string())?;
 
     let record = ServerRecord {
