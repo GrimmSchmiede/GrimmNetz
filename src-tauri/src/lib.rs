@@ -163,8 +163,12 @@ async fn connect_fresh(state: &State<'_, AppState>, server_id: &str) -> Result<s
         db.get_server(server_id).map_err(|e| e.to_string())?
     };
     let password = keyring_store::get_secret(server_id).map_err(|e| e.to_string())?;
+    let host = server
+        .host
+        .as_deref()
+        .ok_or_else(|| "Server hat noch keine IP-Adresse".to_string())?;
     let mut session = ssh::SshSession::connect_password(
-        &server.host,
+        host,
         server.port,
         &server.username,
         &password,
@@ -246,7 +250,7 @@ async fn add_server(state: State<'_, AppState>, input: AddServerInput) -> Result
     let record = ServerRecord {
         id,
         name: input.name,
-        host: input.host,
+        host: Some(input.host),
         port: input.port,
         username: input.username,
         os_info,
@@ -278,7 +282,10 @@ async fn enable_firewall(state: State<'_, AppState>, server_id: String) -> Resul
     let (host, port, username, known_fingerprint) = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
         let server = db.get_server(&server_id).map_err(|e| e.to_string())?;
-        (server.host, server.port, server.username, server.known_host_fingerprint)
+        let host = server
+            .host
+            .ok_or_else(|| "Server hat noch keine IP-Adresse".to_string())?;
+        (host, server.port, server.username, server.known_host_fingerprint)
     };
     let password = keyring_store::get_secret(&server_id).map_err(|e| e.to_string())?;
 
@@ -929,7 +936,10 @@ async fn get_minecraft_live_status(
 ) -> Result<MinecraftLiveStatus, String> {
     let host = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
-        db.get_server(&server_id).map_err(|e| e.to_string())?.host
+        db.get_server(&server_id)
+            .map_err(|e| e.to_string())?
+            .host
+            .ok_or_else(|| "Server hat noch keine IP-Adresse".to_string())?
     };
 
     let raw = {

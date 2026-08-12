@@ -10,7 +10,7 @@ pub struct Db {
 pub struct ServerRecord {
     pub id: String,
     pub name: String,
-    pub host: String,
+    pub host: Option<String>,
     pub port: u16,
     pub username: String,
     pub os_info: Option<String>,
@@ -70,6 +70,36 @@ impl Db {
         let _ = conn.execute("ALTER TABLE servers ADD COLUMN os_info TEXT", []);
         // Migration for DBs created before host-key pinning existed.
         let _ = conn.execute("ALTER TABLE servers ADD COLUMN known_host_fingerprint TEXT", []);
+
+        // Migration: `host` muss nullable sein, damit Weg B (Server-Key vor VM-Existenz
+        // generieren, siehe ssh_keys.rs/prepare_key_only_server) einen Eintrag ohne IP anlegen
+        // kann. SQLite kann NOT NULL nicht per ALTER entfernen, daher Tabellen-Neuerstellung -
+        // nur nötig, wenn die alte NOT-NULL-Variante noch besteht (idempotent über PRAGMA-Check).
+        let host_is_not_null: bool = conn
+            .prepare("SELECT \"notnull\" FROM pragma_table_info('servers') WHERE name = 'host'")?
+            .query_row([], |row| row.get::<_, i64>(0))
+            .unwrap_or(0)
+            == 1;
+        if host_is_not_null {
+            conn.execute_batch(
+                "
+                CREATE TABLE servers_new (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    host TEXT,
+                    port INTEGER NOT NULL DEFAULT 22,
+                    username TEXT NOT NULL,
+                    auth_method TEXT NOT NULL,
+                    os_info TEXT,
+                    known_host_fingerprint TEXT,
+                    created_at TEXT NOT NULL
+                );
+                INSERT INTO servers_new SELECT id, name, host, port, username, auth_method, os_info, known_host_fingerprint, created_at FROM servers;
+                DROP TABLE servers;
+                ALTER TABLE servers_new RENAME TO servers;
+                ",
+            )?;
+        }
         Ok(Self { conn })
     }
 
@@ -108,6 +138,14 @@ impl Db {
             "UPDATE servers SET name = ?2, host = ?3, port = ?4, username = ?5 WHERE id = ?1",
             params![id, name, host, port, username],
         )?;
+        Ok(())
+    }
+
+    /// Trägt Host/Port für einen per Weg B (Key-vor-VM) angelegten Server nach, sobald die VM
+    /// beim Provider existiert und der User die IP in der App einträgt.
+    pub fn set_host(&self, id: &str, host: &str, port: u16) -> rusqlite::Result<()> {
+        self.conn
+            .execute("UPDATE servers SET host = ?1, port = ?2 WHERE id = ?3", params![host, port, id])?;
         Ok(())
     }
 
