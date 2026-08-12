@@ -8,6 +8,15 @@ export type PatchNote = {
 // newest first. Not every internal commit needs its own entry.
 export const PATCH_NOTES: PatchNote[] = [
   {
+    version: "0.1.44",
+    date: "2026-08-12",
+    items: [
+      "Minecraft (Paper) und Factorio laufen jetzt über Docker statt SteamCMD/direktem Prozess - läuft dadurch zuverlässig über verschiedene Linux-Distributionen hinweg (getestet Ubuntu 24.04 & 26.04)",
+      "Factorio ist neu als Stable- und Experimental-Variante wählbar (2.0 vs. Space-Age-Zweig)",
+      "Bugfix: Server-Nachricht bei geplantem/manuellem Neustart kam bei Minecraft nicht an - läuft jetzt wie bei Factorio über RCON statt stdin",
+    ],
+  },
+  {
     version: "0.1.43",
     date: "2026-08-11",
     items: [

@@ -484,7 +484,15 @@ async fn start_install(state: State<'_, AppState>, server_id: String, game_id: S
         .await
         .map_err(|e| e.to_string())?;
 
-    let script = provisioning::render_install_script(&instance_id, &install_path, &unit_name, &template);
+    let script = if template.install.install_type == "docker" {
+        let uid_out = session.exec("id -u gameserver").await.map_err(|e| e.to_string())?;
+        let gid_out = session.exec("id -g gameserver").await.map_err(|e| e.to_string())?;
+        let gameserver_uid: u32 = uid_out.trim().parse().map_err(|_| "Konnte gameserver-UID nicht ermitteln".to_string())?;
+        let gameserver_gid: u32 = gid_out.trim().parse().map_err(|_| "Konnte gameserver-GID nicht ermitteln".to_string())?;
+        provisioning::render_docker_install_script(&instance_id, &install_path, &unit_name, &template, gameserver_uid, gameserver_gid)
+    } else {
+        provisioning::render_install_script(&instance_id, &install_path, &unit_name, &template)
+    };
     let escaped_script = script.replace('\'', "'\\''");
     session
         .exec(&format!(
@@ -1590,6 +1598,28 @@ async fn delete_instance(
         ))
         .await
         .map_err(|e| e.to_string())?;
+    // The install-tracking unit (grimmnetz-install-<id>, RemainAfterExit=yes) otherwise stays
+    // loaded forever as "active exited" - a real gap found live during Task 8: the game unit and
+    // instance directory were cleaned up correctly, but this one was silently left behind on
+    // every single deinstall. Best-effort: a missing install unit (e.g. instance was manually
+    // imported via "Vorhandene Server suchen") is not an error.
+    let install_unit_name = format!("grimmnetz-install-{instance_id}");
+    let _ = session
+        .exec(&format!(
+            // RemainAfterExit=yes keeps the unit "active" indefinitely even after its ExecStart
+            // process exits - `disable` alone only removes the enablement symlink, it does NOT
+            // stop an active unit, so `stop` has to run first or the unit stays loaded and
+            // "active" in systemd's memory even once its file is gone (confirmed live: exactly
+            // this happened when `stop` was missing from the first version of this fix).
+            "sudo systemctl stop {install_unit_name} 2>/dev/null; \
+             sudo systemctl disable {install_unit_name} 2>/dev/null; \
+             sudo rm -f /etc/systemd/system/{install_unit_name}.service"
+        ))
+        .await;
+    // Best-effort: a docker-based install that crashed before its ExecStartPre ever ran (or
+    // between crash-loop restarts) can leave a stopped container behind that --rm never got to
+    // clean up - harmless either way if this game wasn't docker-based (no matching container).
+    let _ = session.exec(&format!("sudo docker rm -f {unit_name} 2>/dev/null")).await;
     session.exec("sudo systemctl daemon-reload").await.map_err(|e| e.to_string())?;
     session
         .exec(&format!("sudo rm -rf {install_path}"))

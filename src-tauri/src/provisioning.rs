@@ -113,6 +113,16 @@ pub async fn bootstrap_server(ssh: &mut SshSession, timezone: Option<&str>) -> R
     )
     .await?;
 
+    // Docker via Valves... nein, via Dockers eigenes Installationsskript - deckt alle
+    // unterstuetzten Distros ab (erkennt Debian/Fedora/etc. selbst), spart uns die manuelle
+    // Paketverwaltungs-Fallunterscheidung wie bei den apt/dnf-Bloecken oben.
+    ssh.exec(
+        "command -v docker >/dev/null || \
+         (curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && sudo sh /tmp/get-docker.sh && rm -f /tmp/get-docker.sh)",
+    )
+    .await?;
+    ssh.exec("sudo systemctl enable --now docker").await?;
+
     ensure_swap(ssh).await?;
     limit_journal_size(ssh).await?;
     ensure_fail2ban(ssh, family).await?;
@@ -228,6 +238,150 @@ pub fn render_systemd_unit(
          [Install]\n\
          WantedBy=multi-user.target\n"
     )
+}
+
+/// Docker-Variante von `render_systemd_unit` - Container statt rohem Binary/Java-Prozess.
+/// Host-Networking (keine Port-Mapping-Konfiguration nötig, Firewall-Logik bleibt identisch),
+/// Bind-Mount nach `/data` (Config-Editor/SFTP funktionieren unveraendert, da Dateien direkt im
+/// bestehenden Instanzordner liegen), Ressourcenlimits ueber `docker run --memory/--cpus` statt
+/// systemd-Cgroups, da Docker-Container standardmaessig NICHT unter dem Cgroup der systemd-Unit
+/// laufen - `MemoryMax=`/`CPUQuota=` in der Unit selbst wuerden hier ins Leere greifen.
+pub fn render_docker_systemd_unit(
+    instance_id: &str,
+    install_path: &str,
+    unit_name: &str,
+    image: &str,
+    container_mount: &str,
+    docker_env: &std::collections::BTreeMap<String, String>,
+    ram_limit_mb: u32,
+    cpu_limit_percent: u32,
+    gameserver_uid: u32,
+    gameserver_gid: u32,
+) -> String {
+    let cpus = cpu_limit_percent as f64 / 100.0;
+    let env_flags: String = docker_env
+        .iter()
+        .map(|(k, v)| format!("-e {}={} ", k, games::shell_single_quote(v)))
+        .collect();
+    format!(
+        "[Unit]\n\
+         Description=GrimmNetz Gameserver Instance {instance_id}\n\
+         After=network.target docker.service\n\
+         Requires=docker.service\n\n\
+         [Service]\n\
+         Type=simple\n\
+         WorkingDirectory={install_path}\n\
+         ExecStartPre=-/usr/bin/docker rm -f {unit_name}\n\
+         ExecStart=/usr/bin/docker run --rm --name {unit_name} \
+--network host --memory={ram_limit_mb}m --cpus={cpus} \
+-v {install_path}:{container_mount} -e PUID={gameserver_uid} -e PGID={gameserver_gid} \
+{env_flags}{image}\n\
+         ExecStop=/usr/bin/docker stop -t 30 {unit_name}\n\
+         Restart=on-failure\n\
+         RestartSec=5\n\n\
+         [Install]\n\
+         WantedBy=multi-user.target\n"
+    )
+}
+
+/// Docker-Variante von `render_install_script` (Task 1 des vorherigen Branches) - `docker pull`
+/// statt SteamCMD/curl-Download, `pre_start_steps` statt der vollen Install-Step-Liste (z.B.
+/// Factorios server-settings.json), sonst identisches Muster: GRIMMNETZ_STEP/DONE/FAILED-Marker,
+/// fail() räumt bei Fehler auf, Verzeichnis bleibt bis zum Selbst-chown root-only (siehe
+/// render_install_script für die Begründung - gilt hier identisch).
+pub fn render_docker_install_script(
+    instance_id: &str,
+    install_path: &str,
+    unit_name: &str,
+    template: &games::GameTemplate,
+    gameserver_uid: u32,
+    gameserver_gid: u32,
+) -> String {
+    let mut script = String::new();
+    script.push_str("#!/bin/bash\n");
+    script.push_str(&format!("cd {install_path} || exit 1\n"));
+    script.push_str(&format!(
+        "fail() {{ echo \"GRIMMNETZ_FAILED:$1\"; sudo rm -rf {install_path}; exit 1; }}\n"
+    ));
+    script.push_str(&format!("chown gameserver:gameserver {install_path}\n"));
+
+    let image = template.install.image.as_deref().unwrap_or_default();
+    let total = 2; // Schritt 1: Image ziehen, Schritt 2: Dienst einrichten - pre_start_steps zaehlen nicht separat mit
+
+    script.push_str(&format!("echo \"GRIMMNETZ_STEP 1/{total}\"\n"));
+    script.push_str(&format!(
+        "docker pull {} || fail \"Image-Download fehlgeschlagen\"\n",
+        games::shell_single_quote(image)
+    ));
+
+    for step in &template.install.pre_start_steps {
+        let rendered = games::render_step(step, instance_id, template.default_ram_limit_mb);
+        let quoted = games::shell_single_quote(&rendered);
+        script.push_str(&format!(
+            "sudo -u gameserver bash -c {quoted} || fail \"Konfiguration konnte nicht vorbereitet werden\"\n"
+        ));
+    }
+
+    let mut rendered_env: std::collections::BTreeMap<String, String> = template
+        .install
+        .docker_env
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.clone(),
+                games::render_step(v, instance_id, template.default_ram_limit_mb),
+            )
+        })
+        .collect();
+
+    // RCON-Passwort wird hier (statt statisch in games.json) pro Instanz zufaellig erzeugt, weil
+    // es sowohl in den Container-Env (RCON_PASSWORD) als auch in die Passwort-Datei geschrieben
+    // werden muss, die build_broadcast_command spaeter zum Verbinden liest.
+    if let Some(rcon) = &template.rcon {
+        let password = uuid::Uuid::new_v4().simple().to_string();
+        rendered_env.insert("RCON_PASSWORD".to_string(), password.clone());
+        let password_path = format!("{install_path}/{}", rcon.password_file);
+        script.push_str(&format!(
+            "sudo -u gameserver bash -c {} || fail \"RCON-Passwort konnte nicht geschrieben werden\"\n",
+            games::shell_single_quote(&format!(
+                "echo {} > {password_path} && chmod 600 {password_path}",
+                games::shell_single_quote(&password)
+            ))
+        ));
+    }
+
+    let unit_contents = render_docker_systemd_unit(
+        instance_id,
+        install_path,
+        unit_name,
+        image,
+        &template.install.container_mount,
+        &rendered_env,
+        template.default_ram_limit_mb,
+        template.default_cpu_limit_percent,
+        gameserver_uid,
+        gameserver_gid,
+    );
+    let escaped_unit = unit_contents.replace('\'', "'\\''");
+    script.push_str(&format!("echo \"GRIMMNETZ_STEP 2/{total}\"\n"));
+    script.push_str(&format!(
+        "echo '{escaped_unit}' | sudo tee /etc/systemd/system/{unit_name}.service > /dev/null || fail \"Systemd-Unit konnte nicht geschrieben werden\"\n"
+    ));
+    script.push_str("sudo systemctl daemon-reload || fail \"daemon-reload fehlgeschlagen\"\n");
+    script.push_str(&format!(
+        "sudo systemctl enable --now {unit_name} || fail \"Dienst konnte nicht gestartet werden\"\n"
+    ));
+
+    for p in &template.ports {
+        script.push_str(&format!(
+            "(sudo ufw status 2>/dev/null | grep -q 'Status: active' && sudo ufw allow {}/{}) || \
+             (systemctl is-active --quiet firewalld 2>/dev/null && sudo firewall-cmd --permanent --add-port={}/{} && sudo firewall-cmd --reload) || true\n",
+            p.port, p.protocol, p.port, p.protocol
+        ));
+    }
+
+    script.push_str("echo \"GRIMMNETZ_DONE\"\n");
+    script
 }
 
 pub async fn install_systemd_unit(ssh: &mut SshSession, unit_name: &str, unit_contents: &str) -> Result<()> {

@@ -1832,7 +1832,7 @@ dependencies = [
 
 [[package]]
 name = "grimmnetz"
-version = "0.1.43"
+version = "0.1.44"
 dependencies = [
  "anyhow",
  "async-trait",
