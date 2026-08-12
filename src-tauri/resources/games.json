@@ -193,7 +193,7 @@
       "tested_on": [],
       "install": {
         "type": "docker",
-        "image": "factoriotools/factorio:latest",
+        "image": "factoriotools/factorio:stable",
         "container_mount": "/factorio",
         "docker_env": {
           "RCON_PORT": "27015"
