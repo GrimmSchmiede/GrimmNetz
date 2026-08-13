@@ -98,6 +98,19 @@ pub struct RconSpec {
     pub save_command: Option<String>,
 }
 
+/// Ein einzelner Fortschritts-Meilenstein beim Hochfahren einer Spiel-Instanz - wird gegen die
+/// letzten Docker-Log-Zeilen geprüft, um dem User einen echten Fortschritt statt eines binären
+/// "läuft/läuft nicht" zu zeigen (Docker-Container können lange nach dem eigentlichen
+/// Containerstart noch mit Weltgenerierung o.ä. beschäftigt sein).
+#[derive(Serialize, Deserialize, Clone)]
+pub struct StartupMilestone {
+    /// Text, der als Teilstring (keine Regex) in einer Docker-Log-Zeile gesucht wird.
+    pub pattern: String,
+    /// Fortschritt in Prozent, sobald `pattern` gefunden wurde. Der höchste unter den in den
+    /// gescannten Zeilen gefundenen Meilensteinen gewinnt.
+    pub percent: u8,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct GameTemplate {
     pub id: String,
@@ -128,6 +141,10 @@ pub struct GameTemplate {
     /// When set, broadcast messages use RCON instead of the stdin FIFO (see `RconSpec`).
     #[serde(default)]
     pub rcon: Option<RconSpec>,
+    /// Geordnete Fortschritts-Meilensteine für die Startup-Ladebalken-Anzeige - leer (Standard)
+    /// bedeutet: dieses Spiel zeigt weiterhin sofort "Online", sobald die Unit aktiv ist.
+    #[serde(default)]
+    pub startup_milestones: Vec<StartupMilestone>,
 }
 
 fn default_console_say_format() -> String {
