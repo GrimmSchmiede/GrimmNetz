@@ -204,6 +204,7 @@ function App() {
       const status = await invoke<InstanceStatus>("get_instance_status", {
         serverId: selectedServerId,
         unitName: instance.systemd_unit,
+        gameId: instance.game_id,
       });
       setInstanceStatus((prev) => ({ ...prev, [instance.id]: status }));
     } catch (err) {
@@ -336,7 +337,11 @@ function App() {
     if (!selectedServerId || instances.length === 0) return;
     const poll = () => {
       instances.forEach((instance) => {
-        invoke<InstanceStatus>("get_instance_status", { serverId: selectedServerId, unitName: instance.systemd_unit })
+        invoke<InstanceStatus>("get_instance_status", {
+          serverId: selectedServerId,
+          unitName: instance.systemd_unit,
+          gameId: instance.game_id,
+        })
           .then((status) => setInstanceStatus((prev) => ({ ...prev, [instance.id]: status })))
           .catch(() => {});
       });
@@ -359,6 +364,7 @@ function App() {
       const status = await invoke<InstanceStatus>("get_instance_status", {
         serverId: selectedServerId,
         unitName: instance.systemd_unit,
+        gameId: instance.game_id,
       });
       setInstanceStatus((prev) => ({ ...prev, [instance.id]: status }));
     } catch (err) {
@@ -772,6 +778,17 @@ function App() {
                       {statusLabel}
                     </div>
                     {status && <div className="nx-instance-card-sub">Uptime: {formatUptime(status.uptime_seconds)}</div>}
+                    {status?.startup_percent != null && status.startup_percent < 100 && (
+                      <div className="nx-startup-progress">
+                        <div className="nx-startup-progress-track">
+                          <div
+                            className="nx-startup-progress-fill"
+                            style={{ width: `${status.startup_percent}%` }}
+                          />
+                        </div>
+                        <div className="nx-startup-progress-label">Startet… {status.startup_percent}%</div>
+                      </div>
+                    )}
                     {instanceVersions[instance.id]?.installed && !instanceVersions[instance.id].up_to_date && (
                       <button
                         className="nx-update-available-btn"
