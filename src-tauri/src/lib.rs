@@ -1951,6 +1951,25 @@ async fn delete_instance(
         .exec(&format!("sudo rm -rf {install_path}"))
         .await
         .map_err(|e| e.to_string())?;
+
+    // Close the ports this instance's install opened, so repeatedly installing/uninstalling
+    // different games doesn't leave the firewall full of stale allow-rules forever (found live:
+    // ports stayed open indefinitely after deinstalling). Best-effort - a missing/unknown game
+    // template (e.g. an instance whose template was since removed) must not block the delete.
+    let instance_game_id = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.get_instance(&instance_id).ok().flatten().map(|i| i.game_id)
+    };
+    if let Some(game_id) = instance_game_id {
+        if let Some(template) = games::find_template(&game_id) {
+            if let Ok(family) = provisioning::detect_distro_family(session).await {
+                for p in &template.ports {
+                    let _ = provisioning::close_port(session, family, p.port, &p.protocol).await;
+                }
+            }
+        }
+    }
+
     drop(guard);
 
     let db = state.db.lock().map_err(|e| e.to_string())?;
