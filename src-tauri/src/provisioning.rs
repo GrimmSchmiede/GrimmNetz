@@ -557,6 +557,36 @@ pub async fn open_port(ssh: &mut SshSession, family: DistroFamily, port: u16, pr
     Ok(())
 }
 
+/// Closes a port again in whichever firewall manager is actually active - the symmetric
+/// counterpart to `open_port`, run on instance deletion so repeatedly installing/uninstalling
+/// different games doesn't leave the firewall full of stale allow-rules for games that are no
+/// longer running (found live: ports stayed open indefinitely after deinstalling, even though
+/// `open_port` is called on every install). Best-effort for the same reason as `open_port` -
+/// no active firewall means nothing to clean up.
+pub async fn close_port(ssh: &mut SshSession, family: DistroFamily, port: u16, protocol: &str) -> Result<()> {
+    match family {
+        DistroFamily::Debian => {
+            let status = ssh.exec("sudo ufw status 2>/dev/null").await.unwrap_or_default();
+            if status.contains("Status: active") {
+                ssh.exec(&format!("sudo ufw delete allow {port}/{protocol} 2>/dev/null")).await?;
+            }
+        }
+        DistroFamily::Fedora => {
+            let status = ssh
+                .exec("systemctl is-active firewalld 2>/dev/null")
+                .await
+                .unwrap_or_default();
+            if status.trim() == "active" {
+                ssh.exec(&format!(
+                    "sudo firewall-cmd --permanent --remove-port={port}/{protocol} && sudo firewall-cmd --reload"
+                ))
+                .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
 pub async fn control_instance(ssh: &mut SshSession, unit_name: &str, action: &str) -> Result<String> {
     // action: "start" | "stop" | "restart"
     ssh.exec(&format!("sudo systemctl {action} {unit_name}")).await
