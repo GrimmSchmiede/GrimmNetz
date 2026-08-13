@@ -121,25 +121,21 @@
       "name": "7 Days to Die",
       "subtitle": "Dedicated Server",
       "icon": "7daystodie.png",
-      "requires": [],
-      "tested_on": [],
+      "requires": ["steamcmd"],
+      "tested_on": ["Ubuntu 24.04"],
       "install": {
-        "type": "docker",
-        "image": "vinanrra/7dtd-server:latest",
-        "mounts": [
-          { "subdir": "world", "container_path": "/home/sdtdserver/.local/share/7DaysToDie/" },
-          { "subdir": "serverfiles", "container_path": "/home/sdtdserver/serverfiles/" },
-          { "subdir": "logs", "container_path": "/home/sdtdserver/log/" },
-          { "subdir": "backups", "container_path": "/home/sdtdserver/lgsm/backup/" }
-        ],
-        "docker_env": {},
-        "pre_start_steps": []
+        "type": "steamcmd",
+        "app_id": 294420,
+        "steps": [
+          "mkdir -p /home/gameserver/instances/{instance_id}",
+          "/home/gameserver/.steamcmd/steamcmd.sh +force_install_dir /home/gameserver/instances/{instance_id} +login anonymous +app_update 294420 validate +quit"
+        ]
       },
-      "start_command": "",
+      "start_command": "./7DaysToDieServer.x86_64 -logfile /home/gameserver/instances/{instance_id}/7dtd.log -batchmode -nographics -dedicated -configfile=serverconfig.xml",
       "default_cpu_limit_percent": 200,
       "default_ram_limit_mb": 6144,
       "config": {
-        "file": "serverfiles/sdtdserver.xml",
+        "file": "serverconfig.xml",
         "format": "xml-properties",
         "fields": [
           { "key": "ServerName", "label": "Server Name", "type": "text", "default": "My Game Host" },
