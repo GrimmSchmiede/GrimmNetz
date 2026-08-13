@@ -1407,6 +1407,21 @@ pub struct InstanceStatus {
     pub startup_percent: Option<u8>,
 }
 
+/// Findet das letzte Vorkommen von `dp.marker` in `logs`, liest die direkt danach stehende
+/// Kommazahl (z.B. `"15.98"` aus `"...progress: 15.98 (...)"`) und bildet sie linear von 0-100
+/// auf `dp.range` ab. `None`, wenn der Marker nicht vorkommt oder die folgende Zahl nicht
+/// parsbar ist - der Aufrufer behandelt das wie "kein Treffer", genau wie bei den
+/// `StartupMilestone`-Textmustern.
+fn parse_download_progress(logs: &str, dp: &games::DownloadProgress) -> Option<u8> {
+    let pos = logs.rfind(&dp.marker)?;
+    let after = &logs[pos + dp.marker.len()..];
+    let number_str: String = after.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    let value: f64 = number_str.parse().ok()?;
+    let value = value.clamp(0.0, 100.0);
+    let (lo, hi) = (dp.range.0 as f64, dp.range.1 as f64);
+    Some((lo + (value / 100.0) * (hi - lo)).round() as u8)
+}
+
 /// Module C: reports whether a game instance's systemd unit is currently running
 /// and how long it's been up, so the UI can show a real status badge + uptime
 /// instead of guessing.
@@ -1455,14 +1470,19 @@ async fn get_instance_status(
 
     let startup_percent: Option<u8> = if state == "active" {
         if let Some(tpl) = game_id.as_deref().and_then(games::find_template) {
-            if !tpl.startup_milestones.is_empty() {
+            if !tpl.startup_milestones.is_empty() || tpl.download_progress.is_some() {
                 let window_percent = match session.exec(&format!("docker logs --tail 200 {unit_name} 2>&1")).await {
-                    Ok(logs) => tpl
-                        .startup_milestones
-                        .iter()
-                        .filter(|m| logs.contains(&m.pattern))
-                        .map(|m| m.percent)
-                        .max(),
+                    Ok(logs) => {
+                        let milestone_percent = tpl
+                            .startup_milestones
+                            .iter()
+                            .filter(|m| logs.contains(&m.pattern))
+                            .map(|m| m.percent)
+                            .max();
+                        let download_percent =
+                            tpl.download_progress.as_ref().and_then(|dp| parse_download_progress(&logs, dp));
+                        milestone_percent.max(download_percent)
+                    }
                     Err(_) => None,
                 };
                 // `docker logs --tail 200` is a moving window - an early milestone can scroll out
