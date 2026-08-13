@@ -10,6 +10,7 @@
       "install": {
         "type": "docker",
         "image": "itzg/minecraft-server:stable",
+        "mounts": [{ "subdir": "", "container_path": "/data" }],
         "docker_env": {
           "EULA": "TRUE",
           "TYPE": "PAPER",
@@ -197,7 +198,7 @@
       "install": {
         "type": "docker",
         "image": "factoriotools/factorio:stable",
-        "container_mount": "/factorio",
+        "mounts": [{ "subdir": "", "container_path": "/factorio" }],
         "docker_env": {
           "RCON_PORT": "27015"
         },
@@ -234,7 +235,7 @@
       "install": {
         "type": "docker",
         "image": "factoriotools/factorio:latest",
-        "container_mount": "/factorio",
+        "mounts": [{ "subdir": "", "container_path": "/factorio" }],
         "docker_env": {
           "RCON_PORT": "27015"
         },

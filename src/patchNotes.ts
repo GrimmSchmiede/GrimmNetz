@@ -8,6 +8,13 @@ export type PatchNote = {
 // newest first. Not every internal commit needs its own entry.
 export const PATCH_NOTES: PatchNote[] = [
   {
+    version: "0.1.46",
+    date: "2026-08-13",
+    items: [
+      "Docker-Unterstützung intern erweitert: Ein Container kann jetzt mehrere getrennte Verzeichnisse mounten statt nur eines - Grundlage für künftige Docker-Spiele mit komplexeren Datenstrukturen",
+    ],
+  },
+  {
     version: "0.1.45",
     date: "2026-08-13",
     items: [
