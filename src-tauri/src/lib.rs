@@ -30,6 +30,15 @@ pub struct AppState {
     /// tray menu's "Beenden" (or the frontend explicitly asking to quit) actually exits.
     pub close_to_tray: Mutex<bool>,
     pub settings_path: std::path::PathBuf,
+    /// Highest startup-milestone percent seen so far per unit, keyed by `unit_name` - `docker
+    /// logs --tail 200` only covers a moving window, so a milestone reached early (e.g. 10%)
+    /// scrolls out of that window long before the next one is reached during a slow download,
+    /// which would otherwise make the percent regress back to `None` and the UI flicker back to
+    /// "Online" mid-startup. Progress must only ever increase within one boot, so it's cached
+    /// here instead of re-derived from the log window alone. Cleared per unit once `uptime_seconds`
+    /// indicates a fresh (re)start, so a genuine restart starts the bar over instead of being
+    /// stuck at the previous boot's percent forever.
+    pub startup_progress_cache: Mutex<HashMap<String, u8>>,
 }
 
 pub struct LocalSystemMonitor {
@@ -1408,6 +1417,7 @@ async fn get_instance_status(
     unit_name: String,
     game_id: Option<String>,
 ) -> Result<InstanceStatus, String> {
+    let app_state = &*state;
     let mut guard = acquire_session(&state, &server_id).await?;
     let session = guard.as_mut().unwrap();
     let result = session
@@ -1436,10 +1446,17 @@ async fn get_instance_status(
     let pid = parts.next().and_then(|v| v.parse::<i64>().ok()).filter(|&p| p != 0);
     let started_at = parts.next().map(|v| v.trim().to_string()).filter(|v| !v.is_empty() && v != "n/a");
 
+    // A fresh (re)start clears any percent cached from a previous boot - otherwise a restarted
+    // instance would keep showing its old boot's (higher) percent forever instead of starting
+    // the bar over.
+    if uptime_seconds < 10 {
+        app_state.startup_progress_cache.lock().map_err(|e| e.to_string())?.remove(&unit_name);
+    }
+
     let startup_percent: Option<u8> = if state == "active" {
         if let Some(tpl) = game_id.as_deref().and_then(games::find_template) {
             if !tpl.startup_milestones.is_empty() {
-                match session.exec(&format!("docker logs --tail 200 {unit_name} 2>&1")).await {
+                let window_percent = match session.exec(&format!("docker logs --tail 200 {unit_name} 2>&1")).await {
                     Ok(logs) => tpl
                         .startup_milestones
                         .iter()
@@ -1447,7 +1464,24 @@ async fn get_instance_status(
                         .map(|m| m.percent)
                         .max(),
                     Err(_) => None,
+                };
+                // `docker logs --tail 200` is a moving window - an early milestone can scroll out
+                // of it long before a later one is reached (e.g. during a slow download), which
+                // would otherwise regress the reported percent back to `None`. Only ever move
+                // forward within one boot: take the max of what's visible now and what was ever
+                // seen before.
+                let mut cache = app_state.startup_progress_cache.lock().map_err(|e| e.to_string())?;
+                let previous = cache.get(&unit_name).copied();
+                let combined = window_percent.max(previous);
+                match combined {
+                    Some(p) if p < 100 => {
+                        cache.insert(unit_name.clone(), p);
+                    }
+                    _ => {
+                        cache.remove(&unit_name);
+                    }
                 }
+                combined
             } else {
                 None
             }
@@ -1455,6 +1489,7 @@ async fn get_instance_status(
             None
         }
     } else {
+        app_state.startup_progress_cache.lock().map_err(|e| e.to_string())?.remove(&unit_name);
         None
     };
 
@@ -2538,6 +2573,7 @@ pub fn run() {
                 local_sys: Mutex::new(LocalSystemMonitor::new()),
                 close_to_tray: Mutex::new(settings.close_to_tray),
                 settings_path,
+                startup_progress_cache: Mutex::new(HashMap::new()),
             });
 
             // Tray icon: left-click shows/focuses the window, menu offers an explicit quit -
