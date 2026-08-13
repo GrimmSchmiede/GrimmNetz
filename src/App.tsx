@@ -723,12 +723,21 @@ function App() {
                 const status = instanceStatus[instance.id];
                 const isActive = status?.state === "active";
                 const isFailed = status?.state === "failed";
-                const statusColor = isActive ? "var(--nx-success)" : isFailed ? "var(--nx-danger)" : "var(--nx-text-muted)";
+                const isStartingUp = isActive && status?.startup_percent != null && status.startup_percent < 100;
+                const statusColor = isStartingUp
+                  ? "var(--nx-accent)"
+                  : isActive
+                  ? "var(--nx-success)"
+                  : isFailed
+                  ? "var(--nx-danger)"
+                  : "var(--nx-text-muted)";
                 const isBusy = instanceBusy === instance.id;
                 const statusLabel = isBusy
                   ? isActive
                     ? "Wird gestoppt…"
                     : "Wird gestartet…"
+                  : isStartingUp
+                  ? "Bereitet vor…"
                   : isActive
                   ? "Online"
                   : isFailed
