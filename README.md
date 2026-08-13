@@ -85,7 +85,7 @@ Der GrimmNetz App-Store unterstützt die 1-Klick-Installation für:
 | Spiel | Getestet | Distro |
 | :--- | :---: | :--- |
 | 🟩 **Minecraft (Paper)** *(Docker, mit Auto-Updates)* | ✅ | Ubuntu 24.04, Ubuntu 26.04 |
-| 🧟 **7 Days to Die** | ✅ | Ubuntu 24.04 |
+| 🧟 **7 Days to Die** *(Docker)* | ✅ | Ubuntu 24.04 |
 | 🌴 **Palworld** | — | — |
 | 🐺 **DayZ** | — | — |
 | ⚙️ **Factorio** *(Docker, Stable-Branch)* | ✅ | Ubuntu 24.04, Ubuntu 26.04 |
@@ -136,8 +136,8 @@ Bewusst zurückgestellte, aber sinnvolle Verbesserungen ohne laufende Kosten - k
 - **vcpkg-Integration:** OpenSSL/SQLCipher-Abhängigkeiten unter Windows automatisch auflösen statt manueller Umgebungsvariablen
 - **Weitere Spiele durchtesten:** Palworld, DayZ, Factorio, Satisfactory, Valheim, V Rising, SCUM einmal komplett end-to-end verifizieren (siehe [Unterstützte Spiele](#-unterstützte-spiele))
 - **Interaktive Konsole:** Aktuell reines Log-Streaming - eine echte Zwei-Wege-Konsole (Befehle direkt eintippen) wäre der nächste Schritt
-- **Docker auf restliche Spiele ausrollen:** Minecraft und Factorio laufen bereits über Docker (siehe [Unterstützte Spiele](#-unterstützte-spiele)) - die übrigen Spiele-Templates (7 Days to Die, Palworld, ...) nutzen noch SteamCMD/direkten Prozess. Watchtower-artige automatische Updates (aktuell gibt's dafür nur Neuinstallation) würden sich damit auch auf die restlichen Spiele ausweiten lassen
-- **7 Days to Die: Docker-Migration abschließen:** Versuch mit `vinanrra/7dtd-server` gestartet - Install/Provisionierung/Firewall/Netzwerk liefen sauber (inkl. Fix für einen bekannten `START_MODE`-Neustart-Loop-Bug des Images), aber der Spiel-Client bekommt beim Verbinden eine Zeitüberschreitung trotz nachweislich funktionierendem bidirektionalem UDP-Traffic - vermutlich ein LiteNetLib/EOS-Handshake-Problem spezifisch für diese Image/Docker-Kombination, nicht netzwerk- oder GrimmNetz-seitig. 7DTD bleibt bis zur Klärung beim nativen SteamCMD-Weg. Die Mehr-Mount-Infrastruktur (`DockerMount`/`mounts` in `games.rs`/`provisioning.rs`), die für dieses Image gebaut wurde, ist bereits gemergt und bei Minecraft/Factorio produktiv im Einsatz
+- **Docker auf restliche Spiele ausrollen:** Minecraft, Factorio und jetzt auch 7 Days to Die laufen über Docker (siehe [Unterstützte Spiele](#-unterstützte-spiele)) - die übrigen Spiele-Templates (Palworld, ...) nutzen noch SteamCMD/direkten Prozess. Watchtower-artige automatische Updates (aktuell gibt's dafür nur Neuinstallation) würden sich damit auch auf die restlichen Spiele ausweiten lassen
+- **Startup-Meilensteine auf weitere Docker-Spiele ausweiten:** Der Ladebalken (echter Fortschritt statt sofortigem "Online", siehe unten) ist bisher nur für 7 Days to Die kalibriert - Minecraft, Factorio und künftige Docker-Spiele bekommen weiterhin sofort "Online" sobald der Container läuft. Schema ist bewusst generisch gehalten, jedes weitere Spiel braucht nur eigene `startup_milestones`/`download_progress`-Werte in `games.json`, kalibriert anhand echter Boot-Logs
 - **CI-Validierung der generierten systemd-Units:** `systemd-analyze verify` gegen die von `render_systemd_unit` erzeugten Dateien in GitHub Actions laufen lassen, um Syntaxfehler bei neuen Spiele-Templates automatisch abzufangen - ohne echte SteamCMD-Downloads in CI zu brauchen
 - **Desktop-Benachrichtigungen:** Meldung bei Server-Absturz oder erreichtem RAM-Limit, statt es nur beim aktiven Draufschauen zu bemerken
 - **Theme-Wechsler:** Echter Light-Mode bzw. Deep-Black-Variante für OLED-Monitore, zusätzlich zum aktuellen Dark-Theme

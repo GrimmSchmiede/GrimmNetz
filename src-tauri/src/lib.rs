@@ -30,6 +30,15 @@ pub struct AppState {
     /// tray menu's "Beenden" (or the frontend explicitly asking to quit) actually exits.
     pub close_to_tray: Mutex<bool>,
     pub settings_path: std::path::PathBuf,
+    /// Highest startup-milestone percent seen so far per unit, keyed by `unit_name` - `docker
+    /// logs --tail 200` only covers a moving window, so a milestone reached early (e.g. 10%)
+    /// scrolls out of that window long before the next one is reached during a slow download,
+    /// which would otherwise make the percent regress back to `None` and the UI flicker back to
+    /// "Online" mid-startup. Progress must only ever increase within one boot, so it's cached
+    /// here instead of re-derived from the log window alone. Cleared per unit once `uptime_seconds`
+    /// indicates a fresh (re)start, so a genuine restart starts the bar over instead of being
+    /// stuck at the previous boot's percent forever.
+    pub startup_progress_cache: Mutex<HashMap<String, u8>>,
 }
 
 pub struct LocalSystemMonitor {
@@ -1395,13 +1404,35 @@ pub struct InstanceStatus {
     pub uptime_seconds: i64,
     pub pid: Option<i64>,
     pub started_at: Option<String>,
+    pub startup_percent: Option<u8>,
+}
+
+/// Findet das letzte Vorkommen von `dp.marker` in `logs`, liest die direkt danach stehende
+/// Kommazahl (z.B. `"15.98"` aus `"...progress: 15.98 (...)"`) und bildet sie linear von 0-100
+/// auf `dp.range` ab. `None`, wenn der Marker nicht vorkommt oder die folgende Zahl nicht
+/// parsbar ist - der Aufrufer behandelt das wie "kein Treffer", genau wie bei den
+/// `StartupMilestone`-Textmustern.
+fn parse_download_progress(logs: &str, dp: &games::DownloadProgress) -> Option<u8> {
+    let pos = logs.rfind(&dp.marker)?;
+    let after = &logs[pos + dp.marker.len()..];
+    let number_str: String = after.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    let value: f64 = number_str.parse().ok()?;
+    let value = value.clamp(0.0, 100.0);
+    let (lo, hi) = (dp.range.0 as f64, dp.range.1 as f64);
+    Some((lo + (value / 100.0) * (hi - lo)).round() as u8)
 }
 
 /// Module C: reports whether a game instance's systemd unit is currently running
 /// and how long it's been up, so the UI can show a real status badge + uptime
 /// instead of guessing.
 #[tauri::command]
-async fn get_instance_status(state: State<'_, AppState>, server_id: String, unit_name: String) -> Result<InstanceStatus, String> {
+async fn get_instance_status(
+    state: State<'_, AppState>,
+    server_id: String,
+    unit_name: String,
+    game_id: Option<String>,
+) -> Result<InstanceStatus, String> {
+    let app_state = &*state;
     let mut guard = acquire_session(&state, &server_id).await?;
     let session = guard.as_mut().unwrap();
     let result = session
@@ -1429,7 +1460,60 @@ async fn get_instance_status(state: State<'_, AppState>, server_id: String, unit
     let uptime_seconds = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
     let pid = parts.next().and_then(|v| v.parse::<i64>().ok()).filter(|&p| p != 0);
     let started_at = parts.next().map(|v| v.trim().to_string()).filter(|v| !v.is_empty() && v != "n/a");
-    Ok(InstanceStatus { state, uptime_seconds, pid, started_at })
+
+    // A fresh (re)start clears any percent cached from a previous boot - otherwise a restarted
+    // instance would keep showing its old boot's (higher) percent forever instead of starting
+    // the bar over.
+    if uptime_seconds < 10 {
+        app_state.startup_progress_cache.lock().map_err(|e| e.to_string())?.remove(&unit_name);
+    }
+
+    let startup_percent: Option<u8> = if state == "active" {
+        if let Some(tpl) = game_id.as_deref().and_then(games::find_template) {
+            if !tpl.startup_milestones.is_empty() || tpl.download_progress.is_some() {
+                let window_percent = match session.exec(&format!("docker logs --tail 200 {unit_name} 2>&1")).await {
+                    Ok(logs) => {
+                        let milestone_percent = tpl
+                            .startup_milestones
+                            .iter()
+                            .filter(|m| logs.contains(&m.pattern))
+                            .map(|m| m.percent)
+                            .max();
+                        let download_percent =
+                            tpl.download_progress.as_ref().and_then(|dp| parse_download_progress(&logs, dp));
+                        milestone_percent.max(download_percent)
+                    }
+                    Err(_) => None,
+                };
+                // `docker logs --tail 200` is a moving window - an early milestone can scroll out
+                // of it long before a later one is reached (e.g. during a slow download), which
+                // would otherwise regress the reported percent back to `None`. Only ever move
+                // forward within one boot: take the max of what's visible now and what was ever
+                // seen before.
+                let mut cache = app_state.startup_progress_cache.lock().map_err(|e| e.to_string())?;
+                let previous = cache.get(&unit_name).copied();
+                let combined = window_percent.max(previous);
+                match combined {
+                    Some(p) if p < 100 => {
+                        cache.insert(unit_name.clone(), p);
+                    }
+                    _ => {
+                        cache.remove(&unit_name);
+                    }
+                }
+                combined
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        app_state.startup_progress_cache.lock().map_err(|e| e.to_string())?.remove(&unit_name);
+        None
+    };
+
+    Ok(InstanceStatus { state, uptime_seconds, pid, started_at, startup_percent })
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -2509,6 +2593,7 @@ pub fn run() {
                 local_sys: Mutex::new(LocalSystemMonitor::new()),
                 close_to_tray: Mutex::new(settings.close_to_tray),
                 settings_path,
+                startup_progress_cache: Mutex::new(HashMap::new()),
             });
 
             // Tray icon: left-click shows/focuses the window, menu offers an explicit quit -

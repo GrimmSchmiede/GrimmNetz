@@ -122,7 +122,7 @@
       "subtitle": "Dedicated Server",
       "icon": "7daystodie.png",
       "requires": [],
-      "tested_on": [],
+      "tested_on": ["Ubuntu 24.04"],
       "install": {
         "type": "docker",
         "image": "vinanrra/7dtd-server:latest",
@@ -138,6 +138,18 @@
       "start_command": "",
       "default_cpu_limit_percent": 200,
       "default_ram_limit_mb": 6144,
+      "startup_milestones": [
+        { "pattern": "createWorld:", "percent": 85 },
+        { "pattern": "Started thread ChunkRegeneration", "percent": 88 },
+        { "pattern": "Started thread GenerateChunks", "percent": 91 },
+        { "pattern": "Calculating world hashes", "percent": 94 },
+        { "pattern": "GameServer.LogOn successful", "percent": 97 },
+        { "pattern": "StartGame done", "percent": 100 }
+      ],
+      "download_progress": {
+        "marker": "downloading, progress: ",
+        "range": [0, 80]
+      },
       "config": {
         "file": "serverfiles/sdtdserver.xml",
         "format": "xml-properties",

@@ -8,6 +8,15 @@ export type PatchNote = {
 // newest first. Not every internal commit needs its own entry.
 export const PATCH_NOTES: PatchNote[] = [
   {
+    version: "0.1.47",
+    date: "2026-08-13",
+    items: [
+      "Neu: Ladebalken mit echtem Fortschritt statt sofortigem 'Online' bei Spielen, die nach dem Start noch selbst herunterladen oder eine Welt generieren - zeigt 'Bereitet vor… X%', bisher vorerst nur für 7 Days to Die kalibriert",
+      "7 Days to Die läuft wieder über Docker (vinanrra-Image) - Verbindungsproblem der letzten Version war eine falsche Netzwerk-Einstellung im Server (LiteNetLib fälschlich deaktiviert), jetzt behoben",
+      "Bugfix: Firewall-Ports einer Instanz wurden beim Löschen nie wieder geschlossen - sammelten sich über viele Install/Uninstall-Zyklen als verwaiste Regeln an, werden jetzt korrekt mit entfernt",
+    ],
+  },
+  {
     version: "0.1.46",
     date: "2026-08-13",
     items: [
