@@ -139,7 +139,6 @@
       "default_cpu_limit_percent": 200,
       "default_ram_limit_mb": 6144,
       "startup_milestones": [
-        { "pattern": "Starting periodic command scheduler cron", "percent": 82 },
         { "pattern": "createWorld:", "percent": 85 },
         { "pattern": "Started thread ChunkRegeneration", "percent": 88 },
         { "pattern": "Started thread GenerateChunks", "percent": 91 },
