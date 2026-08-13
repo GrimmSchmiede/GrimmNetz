@@ -13,6 +13,7 @@ export type InstanceStatus = {
   uptime_seconds: number;
   pid: number | null;
   started_at: string | null;
+  startup_percent: number | null;
 };
 
 export type LocalSystemStats = {

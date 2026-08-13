@@ -98,6 +98,32 @@ pub struct RconSpec {
     pub save_command: Option<String>,
 }
 
+/// Ein einzelner Fortschritts-Meilenstein beim Hochfahren einer Spiel-Instanz - wird gegen die
+/// letzten Docker-Log-Zeilen geprüft, um dem User einen echten Fortschritt statt eines binären
+/// "läuft/läuft nicht" zu zeigen (Docker-Container können lange nach dem eigentlichen
+/// Containerstart noch mit Weltgenerierung o.ä. beschäftigt sein).
+#[derive(Serialize, Deserialize, Clone)]
+pub struct StartupMilestone {
+    /// Text, der als Teilstring (keine Regex) in einer Docker-Log-Zeile gesucht wird.
+    pub pattern: String,
+    /// Fortschritt in Prozent, sobald `pattern` gefunden wurde. Der höchste unter den in den
+    /// gescannten Zeilen gefundenen Meilensteinen gewinnt.
+    pub percent: u8,
+}
+
+/// Extrahiert einen numerischen Fortschritt (0-100) aus einer Log-Zeile, für Downloadphasen,
+/// die den Großteil der Wartezeit ausmachen können (z.B. SteamCMD-Download innerhalb eines
+/// Docker-Containers), aber von den diskreten `StartupMilestone`-Textmustern nicht erfasst
+/// werden. `marker` steht direkt vor der Zahl in der Log-Zeile (z.B. `"progress: "` bei
+/// SteamCMD-Zeilen wie `Update state (0x61) downloading, progress: 15.98 (...)`). Die
+/// gefundene 0-100-Zahl wird linear auf `range` abgebildet, damit sie sich mit den
+/// `StartupMilestone`-Werten zu einer durchgehenden Skala zusammensetzt.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct DownloadProgress {
+    pub marker: String,
+    pub range: (u8, u8),
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct GameTemplate {
     pub id: String,
@@ -128,6 +154,15 @@ pub struct GameTemplate {
     /// When set, broadcast messages use RCON instead of the stdin FIFO (see `RconSpec`).
     #[serde(default)]
     pub rcon: Option<RconSpec>,
+    /// Geordnete Fortschritts-Meilensteine für die Startup-Ladebalken-Anzeige - leer (Standard)
+    /// bedeutet: dieses Spiel zeigt weiterhin sofort "Online", sobald die Unit aktiv ist.
+    #[serde(default)]
+    pub startup_milestones: Vec<StartupMilestone>,
+    /// Optionale numerische Fortschrittsquelle für eine Downloadphase vor den `startup_milestones`
+    /// - siehe `DownloadProgress`. `None` (Standard) bedeutet: kein numerischer Download-Fortschritt,
+    /// nur die diskreten Meilensteine.
+    #[serde(default)]
+    pub download_progress: Option<DownloadProgress>,
 }
 
 fn default_console_say_format() -> String {

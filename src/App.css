@@ -852,6 +852,30 @@
   margin-bottom: 10px;
 }
 
+.nx-startup-progress {
+  margin-top: 4px;
+  margin-bottom: 10px;
+}
+
+.nx-startup-progress-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--nx-border);
+  overflow: hidden;
+}
+
+.nx-startup-progress-fill {
+  height: 100%;
+  background: var(--nx-accent);
+  transition: width 0.3s ease;
+}
+
+.nx-startup-progress-label {
+  font-size: 11px;
+  color: var(--nx-text-muted);
+  margin-top: 2px;
+}
+
 .nx-update-available-btn {
   width: 100%;
   margin-top: 6px;
