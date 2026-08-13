@@ -134,6 +134,15 @@
       "start_command": "./7DaysToDieServer.x86_64 -logfile /home/gameserver/instances/{instance_id}/7dtd.log -batchmode -nographics -dedicated -configfile=serverconfig.xml",
       "default_cpu_limit_percent": 200,
       "default_ram_limit_mb": 6144,
+      "startup_milestones": [
+        { "pattern": "Starting periodic command scheduler cron", "percent": 10 },
+        { "pattern": "createWorld:", "percent": 25 },
+        { "pattern": "Started thread ChunkRegeneration", "percent": 40 },
+        { "pattern": "Started thread GenerateChunks", "percent": 55 },
+        { "pattern": "Calculating world hashes", "percent": 70 },
+        { "pattern": "GameServer.LogOn successful", "percent": 85 },
+        { "pattern": "StartGame done", "percent": 100 }
+      ],
       "config": {
         "file": "serverconfig.xml",
         "format": "xml-properties",
