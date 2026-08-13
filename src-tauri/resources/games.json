@@ -10,6 +10,7 @@
       "install": {
         "type": "docker",
         "image": "itzg/minecraft-server:stable",
+        "mounts": [{ "subdir": "", "container_path": "/data" }],
         "docker_env": {
           "EULA": "TRUE",
           "TYPE": "PAPER",
@@ -120,21 +121,25 @@
       "name": "7 Days to Die",
       "subtitle": "Dedicated Server",
       "icon": "7daystodie.png",
-      "requires": ["steamcmd"],
-      "tested_on": ["Ubuntu 24.04"],
+      "requires": [],
+      "tested_on": [],
       "install": {
-        "type": "steamcmd",
-        "app_id": 294420,
-        "steps": [
-          "mkdir -p /home/gameserver/instances/{instance_id}",
-          "/home/gameserver/.steamcmd/steamcmd.sh +force_install_dir /home/gameserver/instances/{instance_id} +login anonymous +app_update 294420 validate +quit"
-        ]
+        "type": "docker",
+        "image": "vinanrra/7dtd-server:latest",
+        "mounts": [
+          { "subdir": "world", "container_path": "/home/sdtdserver/.local/share/7DaysToDie/" },
+          { "subdir": "serverfiles", "container_path": "/home/sdtdserver/serverfiles/" },
+          { "subdir": "logs", "container_path": "/home/sdtdserver/log/" },
+          { "subdir": "backups", "container_path": "/home/sdtdserver/lgsm/backup/" }
+        ],
+        "docker_env": {},
+        "pre_start_steps": []
       },
-      "start_command": "./7DaysToDieServer.x86_64 -logfile /home/gameserver/instances/{instance_id}/7dtd.log -batchmode -nographics -dedicated -configfile=serverconfig.xml",
+      "start_command": "",
       "default_cpu_limit_percent": 200,
       "default_ram_limit_mb": 6144,
       "config": {
-        "file": "serverconfig.xml",
+        "file": "serverfiles/sdtdserver.xml",
         "format": "xml-properties",
         "fields": [
           { "key": "ServerName", "label": "Server Name", "type": "text", "default": "My Game Host" },
@@ -197,7 +202,7 @@
       "install": {
         "type": "docker",
         "image": "factoriotools/factorio:stable",
-        "container_mount": "/factorio",
+        "mounts": [{ "subdir": "", "container_path": "/factorio" }],
         "docker_env": {
           "RCON_PORT": "27015"
         },
@@ -234,7 +239,7 @@
       "install": {
         "type": "docker",
         "image": "factoriotools/factorio:latest",
-        "container_mount": "/factorio",
+        "mounts": [{ "subdir": "", "container_path": "/factorio" }],
         "docker_env": {
           "RCON_PORT": "27015"
         },
