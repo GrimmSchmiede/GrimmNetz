@@ -1395,13 +1395,19 @@ pub struct InstanceStatus {
     pub uptime_seconds: i64,
     pub pid: Option<i64>,
     pub started_at: Option<String>,
+    pub startup_percent: Option<u8>,
 }
 
 /// Module C: reports whether a game instance's systemd unit is currently running
 /// and how long it's been up, so the UI can show a real status badge + uptime
 /// instead of guessing.
 #[tauri::command]
-async fn get_instance_status(state: State<'_, AppState>, server_id: String, unit_name: String) -> Result<InstanceStatus, String> {
+async fn get_instance_status(
+    state: State<'_, AppState>,
+    server_id: String,
+    unit_name: String,
+    game_id: Option<String>,
+) -> Result<InstanceStatus, String> {
     let mut guard = acquire_session(&state, &server_id).await?;
     let session = guard.as_mut().unwrap();
     let result = session
@@ -1429,7 +1435,30 @@ async fn get_instance_status(state: State<'_, AppState>, server_id: String, unit
     let uptime_seconds = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
     let pid = parts.next().and_then(|v| v.parse::<i64>().ok()).filter(|&p| p != 0);
     let started_at = parts.next().map(|v| v.trim().to_string()).filter(|v| !v.is_empty() && v != "n/a");
-    Ok(InstanceStatus { state, uptime_seconds, pid, started_at })
+
+    let startup_percent: Option<u8> = if state == "active" {
+        if let Some(tpl) = game_id.as_deref().and_then(games::find_template) {
+            if !tpl.startup_milestones.is_empty() {
+                match session.exec(&format!("docker logs --tail 200 {unit_name} 2>&1")).await {
+                    Ok(logs) => tpl
+                        .startup_milestones
+                        .iter()
+                        .filter(|m| logs.contains(&m.pattern))
+                        .map(|m| m.percent)
+                        .max(),
+                    Err(_) => None,
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    Ok(InstanceStatus { state, uptime_seconds, pid, started_at, startup_percent })
 }
 
 #[derive(Serialize, Deserialize, Clone)]
