@@ -2,6 +2,20 @@ use serde::{Deserialize, Serialize};
 
 const GAMES_JSON: &str = include_str!("../resources/games.json");
 
+/// Ein einzelner Bind-Mount für einen Docker-Container - manche Images (z.B.
+/// `vinanrra/7dtd-server`) verlangen mehrere getrennte Mounts statt eines einzigen `/data`-
+/// Pfads (Weltdaten, Server-Config, Logs, Backups jeweils eigener Ordner im Container).
+#[derive(Serialize, Deserialize, Clone)]
+pub struct DockerMount {
+    /// Unterordner relativ zum Instanz-Install-Pfad auf dem Host. Leerer String heißt "der
+    /// Install-Pfad selbst" - deckt das einfache Ein-Mount-Verhalten der meisten Docker-Spiele
+    /// (Minecraft, Factorio) ab, ohne dass die für die dort schon vorhandenen `pre_start_steps`
+    /// erzeugten relativen Pfade (z.B. `config/rconpw`) angepasst werden müssten.
+    #[serde(default)]
+    pub subdir: String,
+    pub container_path: String,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct GameInstall {
     #[serde(rename = "type")]
@@ -16,10 +30,10 @@ pub struct GameInstall {
     /// Umgebungsvariablen für `docker run -e KEY=VALUE ...`.
     #[serde(default)]
     pub docker_env: std::collections::BTreeMap<String, String>,
-    /// Pfad im Container, auf den das Instanzverzeichnis gemountet wird - Standard "/data"
-    /// (itzg/minecraft-server), manche Images erwarten einen anderen Pfad (z.B. factoriotools/factorio: "/factorio").
-    #[serde(default = "default_container_mount")]
-    pub container_mount: String,
+    /// Bind-Mounts für `docker run -v ...` - mindestens ein Eintrag bei `install_type ==
+    /// "docker"`. Siehe `DockerMount`-Dokumentation für den Ein-vs-Mehr-Mount-Unterschied.
+    #[serde(default)]
+    pub mounts: Vec<DockerMount>,
     /// Shell-Schritte, die vor dem ersten Containerstart im Bind-Mount laufen (z. B. Factorios
     /// server-settings.json) - laufen wie die klassischen `steps` als `gameserver`-User.
     #[serde(default)]
@@ -118,10 +132,6 @@ pub struct GameTemplate {
 
 fn default_console_say_format() -> String {
     "say {message}".to_string()
-}
-
-fn default_container_mount() -> String {
-    "/data".to_string()
 }
 
 #[derive(Deserialize)]
